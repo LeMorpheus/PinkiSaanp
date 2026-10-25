@@ -1,0 +1,1203 @@
+<!doctype html>
+<html lang="en-us">
+
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+
+    <title>Replay Visualizer</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            background: #f4f1ea;
+            text-align: center;
+            color: #333;
+        }
+
+        #replay-controls {
+            margin: 20px auto;
+            max-width: 600px;
+        }
+
+        #replay-form {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+        }
+
+        #log-id {
+            padding: 8px 12px;
+            font-size: 16px;
+            width: 120px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        button {
+            padding: 8px 16px;
+            font-size: 16px;
+            background: #3e302b;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #251c19;
+        }
+
+        .music-btn {
+            position: fixed;
+            top: 16px;
+            right: 20px;
+            z-index: 1000;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 14px;
+            font-size: 13px;
+            font-weight: 600;
+            background: rgba(255, 255, 255, 0.95);
+            color: #444;
+            border: 1px solid #dcd7ce;
+            border-radius: 20px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+            cursor: pointer;
+            backdrop-filter: blur(4px);
+            transition: all 0.2s ease;
+        }
+
+        .music-btn:hover {
+            background: #fff;
+            color: #111;
+            border-color: #bbb;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.12);
+            transform: translateY(-1px);
+        }
+
+        .music-btn.playing {
+            background: #237b38;
+            color: #fff;
+            border-color: #1c632d;
+            box-shadow: 0 2px 8px rgba(35, 123, 56, 0.3);
+        }
+
+        .music-btn.playing:hover {
+            background: #1e6d31;
+            border-color: #175225;
+            color: #fff;
+        }
+
+        #replay-status {
+            min-height: 20px;
+            margin-top: 10px;
+            font-weight: 500;
+        }
+
+        #status {
+            margin: 10px;
+            font-weight: bold;
+            color: #777;
+        }
+
+        #progress {
+            height: 20px;
+            width: 300px;
+        }
+
+        .spinner {
+            height: 30px;
+            width: 30px;
+            margin: 10px auto;
+            animation: rotation 0.8s linear infinite;
+            border-left: 5px solid #ebebeb;
+            border-right: 5px solid #ebebeb;
+            border-bottom: 5px solid #ebebeb;
+            border-top: 5px solid #787878;
+            border-radius: 100%;
+        }
+
+        @keyframes rotation {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        /* Layout Container: Canvas + Scoreboard */
+        .visualizer-container {
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            gap: 24px;
+            margin: 20px auto;
+            max-width: 1200px;
+            padding: 0 16px;
+        }
+
+        .canvas-column {
+            width: 800px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        #video-controls {
+            display: none;
+            background: #fff;
+            border-radius: 8px;
+            padding: 12px 18px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            border: 1px solid #e2ddd3;
+            flex-direction: column;
+            gap: 10px;
+            text-align: left;
+        }
+
+        #video-controls.visible {
+            display: flex;
+        }
+
+        .timeline-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            width: 100%;
+        }
+
+        .time-label {
+            font-size: 13px;
+            font-weight: bold;
+            color: #555;
+            min-width: 38px;
+            text-align: center;
+            font-variant-numeric: tabular-nums;
+        }
+
+        #tick-scrubber {
+            flex: 1;
+            -webkit-appearance: none;
+            appearance: none;
+            height: 6px;
+            border-radius: 3px;
+            background: #e6e2d8;
+            outline: none;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        #tick-scrubber::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #3e302b;
+            cursor: pointer;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+            transition: transform 0.1s, background 0.2s;
+        }
+
+        #tick-scrubber::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+            background: #ef4123;
+        }
+
+        #tick-scrubber::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            border: none;
+            border-radius: 50%;
+            background: #3e302b;
+            cursor: pointer;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+            transition: transform 0.1s, background 0.2s;
+        }
+
+        #tick-scrubber::-moz-range-thumb:hover {
+            transform: scale(1.2);
+            background: #ef4123;
+        }
+
+        .controls-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .controls-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .ctrl-btn {
+            background: #ede9e0;
+            color: #333;
+            border: 1px solid #dcd7ce;
+            border-radius: 6px;
+            padding: 6px 14px;
+            font-size: 13px;
+            font-weight: bold;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 42px;
+            height: 34px;
+            transition: all 0.15s ease;
+        }
+
+        .ctrl-btn:hover {
+            background: #e0dbd0;
+            color: #000;
+        }
+
+        .ctrl-btn-main {
+            background: #3e302b;
+            color: #fff;
+            border-color: #3e302b;
+            padding: 6px 18px;
+            font-size: 13px;
+            min-width: 68px;
+        }
+
+        .ctrl-btn-main:hover {
+            background: #251c19;
+            color: #fff;
+        }
+
+        .speed-btn {
+            background: #ede9e0;
+            color: #555;
+            border: 1px solid #dcd7ce;
+            border-radius: 4px;
+            padding: 4px 8px;
+            font-size: 12px;
+            font-weight: bold;
+            cursor: pointer;
+            height: 28px;
+            transition: all 0.15s ease;
+        }
+
+        .speed-btn:hover {
+            background: #e0dbd0;
+            color: #111;
+        }
+
+        .speed-btn.active {
+            background: #3e302b;
+            color: #fff;
+            border-color: #3e302b;
+        }
+
+        .emscripten_border {
+            display: inline-block;
+            border: 2px solid #3e302b;
+            border-radius: 6px;
+            overflow: hidden;
+            background-color: #000;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+        }
+
+        canvas.emscripten {
+            display: block;
+            border: 0;
+            background-color: #000;
+        }
+
+        /* Scoreboard Panel */
+        #scoreboard-panel {
+            width: 320px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            text-align: left;
+        }
+
+        #player-cards {
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+        }
+
+        .hud-card {
+            background: #fff;
+            border-radius: 8px;
+            padding: 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            border: 1px solid #e2ddd3;
+        }
+
+        .hud-title {
+            font-size: 14px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #666;
+            margin-bottom: 8px;
+        }
+
+        .tick-display {
+            font-size: 24px;
+            font-weight: bold;
+            color: #222;
+            margin-bottom: 8px;
+        }
+
+        .progress-bar-bg {
+            height: 8px;
+            background: #e6e2d8;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            width: 0%;
+            background: #3e302b;
+            transition: width 0.1s linear;
+        }
+
+        /* Player Cards */
+        .player-card {
+            background: #fff;
+            border-radius: 8px;
+            padding: 14px 16px;
+            border-left: 6px solid #ccc;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .p1-card { border-left-color: #ef4123; }
+        .p2-card { border-left-color: #9d4620; }
+        .p3-card { border-left-color: #ffef4d; }
+        .p4-card { border-left-color: #659753; }
+
+        .player-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .player-name {
+            font-weight: bold;
+            font-size: 15px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .badge {
+            font-size: 11px;
+            font-weight: bold;
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #fff;
+        }
+
+        .p1-badge { background: #ef4123; }
+        .p2-badge { background: #9d4620; }
+        .p3-badge { background: #d4c200; color: #111; }
+        .p4-badge { background: #659753; }
+
+        .player-stats {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            color: #555;
+        }
+
+        .score-text {
+            font-weight: bold;
+            color: #222;
+        }
+
+        .territory-bar-bg {
+            height: 6px;
+            background: #eee;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .territory-bar-fill {
+            height: 100%;
+            width: 0%;
+            transition: width 0.15s ease-out;
+        }
+
+        .p1-fill { background: #ef4123; }
+        .p2-fill { background: #9d4620; }
+        .p3-fill { background: #ffef4d; }
+        .p4-fill { background: #659753; }
+
+        #output {
+            width: 800px;
+            max-width: 90%;
+            height: 100px;
+            margin: 20px auto;
+            display: block;
+            background-color: #1e1e1e;
+            color: #eee;
+            font-family: monospace;
+            border-radius: 6px;
+            padding: 8px;
+            border: 1px solid #444;
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- Sleek top-right music toggle -->
+    <button type="button" id="music-toggle-btn" class="music-btn" title="Toggle Background Music">
+        Music: Off
+    </button>
+    <audio id="bg-music" src="bg.ogg" loop preload="auto"></audio>
+
+    <h1>Replay Visualizer</h1>
+
+    <!-- ============================= -->
+    <!-- Replay selector -->
+    <!-- ============================= -->
+
+    <div id="replay-controls">
+
+        <form id="replay-form">
+
+            <label for="log-id">
+                Log ID:
+            </label>
+
+            <input
+                type="number"
+                id="log-id"
+                name="log_id"
+                min="1"
+                required
+            >
+
+            <button type="submit">
+                Load Replay
+            </button>
+
+        </form>
+
+        <div id="replay-status"></div>
+
+    </div>
+
+
+    <!-- ============================= -->
+    <!-- Emscripten loading UI -->
+    <!-- ============================= -->
+
+    <div class="spinner" id="spinner"></div>
+
+    <div id="status">
+        Downloading...
+    </div>
+
+    <progress
+        value="0"
+        max="100"
+        id="progress"
+        hidden>
+    </progress>
+
+
+    <!-- ============================= -->
+    <!-- Raylib canvas + Scoreboard -->
+    <!-- ============================= -->
+
+    <div class="visualizer-container">
+        <div class="canvas-column">
+            <div class="emscripten_border">
+                <canvas
+                    class="emscripten"
+                    id="canvas"
+                    oncontextmenu="event.preventDefault()"
+                    tabindex="-1">
+                </canvas>
+            </div>
+
+            <!-- Video Playback Controls -->
+            <div id="video-controls">
+                <div class="timeline-row">
+                    <span id="ctrl-current-tick" class="time-label">0</span>
+                    <input type="range" id="tick-scrubber" min="0" max="0" value="0" step="1">
+                    <span id="ctrl-total-ticks" class="time-label">0</span>
+                </div>
+
+                <div class="controls-row">
+                    <div class="controls-group">
+                        <button type="button" id="ctrl-restart" class="ctrl-btn" title="Restart match (R)">Restart</button>
+                        <button type="button" id="ctrl-prev" class="ctrl-btn" title="Step back 20 ticks (Left Arrow)">◀</button>
+                        <button type="button" id="ctrl-play-pause" class="ctrl-btn ctrl-btn-main" title="Play / Pause (Space)">Pause</button>
+                        <button type="button" id="ctrl-next" class="ctrl-btn" title="Step forward 20 ticks (Right Arrow)">▶</button>
+                    </div>
+
+                    <div class="controls-group">
+                        <span style="font-size: 12px; color: #777; font-weight: bold; margin-right: 2px;">SPEED:</span>
+                        <button type="button" class="speed-btn" data-speed="0.5">0.5x</button>
+                        <button type="button" class="speed-btn active" data-speed="1.0">1x</button>
+                        <button type="button" class="speed-btn" data-speed="2.0">2x</button>
+                        <button type="button" class="speed-btn" data-speed="4.0">4x</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="scoreboard-panel">
+            <div class="hud-card match-info">
+                <div class="hud-title">Match Progress</div>
+                <div class="tick-display">
+                    Tick <span id="current-tick">0</span> / <span id="total-ticks">0</span>
+                </div>
+                <div class="progress-bar-bg">
+                    <div id="tick-progress-bar" class="progress-bar-fill"></div>
+                </div>
+            </div>
+
+            <div class="hud-title">Live Leaderboard</div>
+            <div id="player-cards">
+                <!-- P1 -->
+                <div class="player-card p1-card">
+                    <div class="player-header">
+                        <span class="player-name"><span class="badge p1-badge">P1</span> Player 1</span>
+                    </div>
+                    <div class="player-stats">
+                        <span id="p1-percent">0.0%</span>
+                        <span class="score-text" id="p1-score">0 tiles</span>
+                    </div>
+                    <div class="territory-bar-bg">
+                        <div id="p1-bar" class="territory-bar-fill p1-fill"></div>
+                    </div>
+                </div>
+
+                <!-- P2 -->
+                <div class="player-card p2-card">
+                    <div class="player-header">
+                        <span class="player-name"><span class="badge p2-badge">P2</span> Player 2</span>
+                    </div>
+                    <div class="player-stats">
+                        <span id="p2-percent">0.0%</span>
+                        <span class="score-text" id="p2-score">0 tiles</span>
+                    </div>
+                    <div class="territory-bar-bg">
+                        <div id="p2-bar" class="territory-bar-fill p2-fill"></div>
+                    </div>
+                </div>
+
+                <!-- P3 -->
+                <div class="player-card p3-card">
+                    <div class="player-header">
+                        <span class="player-name"><span class="badge p3-badge">P3</span> Player 3</span>
+                    </div>
+                    <div class="player-stats">
+                        <span id="p3-percent">0.0%</span>
+                        <span class="score-text" id="p3-score">0 tiles</span>
+                    </div>
+                    <div class="territory-bar-bg">
+                        <div id="p3-bar" class="territory-bar-fill p3-fill"></div>
+                    </div>
+                </div>
+
+                <!-- P4 -->
+                <div class="player-card p4-card">
+                    <div class="player-header">
+                        <span class="player-name"><span class="badge p4-badge">P4</span> Player 4</span>
+                    </div>
+                    <div class="player-stats">
+                        <span id="p4-percent">0.0%</span>
+                        <span class="score-text" id="p4-score">0 tiles</span>
+                    </div>
+                    <div class="territory-bar-bg">
+                        <div id="p4-bar" class="territory-bar-fill p4-fill"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- ============================= -->
+    <!-- Console output -->
+    <!-- ============================= -->
+
+    <textarea
+        id="output"
+        rows="8"
+        readonly>
+    </textarea>
+
+
+    <script>
+        // Prevent Emscripten/GLFW global key listeners from blocking Backspace/Tab/typing in form inputs
+        const originalPreventDefault = KeyboardEvent.prototype.preventDefault;
+        KeyboardEvent.prototype.preventDefault = function() {
+            if (this.target && (this.target.tagName === "INPUT" || this.target.tagName === "TEXTAREA")) {
+                return;
+            }
+            return originalPreventDefault.apply(this, arguments);
+        };
+
+        const statusElement =
+            document.getElementById("status");
+
+        const progressElement =
+            document.getElementById("progress");
+
+        const spinnerElement =
+            document.getElementById("spinner");
+
+        const canvasElement =
+            document.getElementById("canvas");
+
+        const outputElement =
+            document.getElementById("output");
+
+
+        outputElement.value = "";
+
+
+        /*
+         * Emscripten status display
+         */
+
+        function setStatus(text) {
+
+            if (!setStatus.last) {
+                setStatus.last = {
+                    time: Date.now(),
+                    text: ""
+                };
+            }
+
+            if (text === setStatus.last.text)
+                return;
+
+            const m =
+                text.match(
+                    /([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/
+                );
+
+            const now = Date.now();
+
+            if (
+                m &&
+                now - setStatus.last.time < 30
+            ) {
+                return;
+            }
+
+            setStatus.last.time = now;
+            setStatus.last.text = text;
+
+
+            if (m) {
+
+                statusElement.textContent = m[1];
+
+                progressElement.value =
+                    parseInt(m[2]) * 100;
+
+                progressElement.max =
+                    parseInt(m[4]) * 100;
+
+                progressElement.hidden = false;
+                spinnerElement.hidden = false;
+
+            } else {
+
+                progressElement.hidden = true;
+
+                if (!text) {
+                    spinnerElement.style.display =
+                        "none";
+                }
+
+                statusElement.textContent = text;
+            }
+        }
+
+
+        /*
+         * Promise used to know when WASM
+         * is ready for JS -> C++ calls.
+         */
+
+        let resolveWasmReady;
+
+        const wasmReady =
+            new Promise((resolve) => {
+                resolveWasmReady = resolve;
+            });
+
+
+        /*
+         * Emscripten Module
+         */
+
+        var Module = {
+
+            print(...args) {
+
+                console.log(...args);
+
+                const text = args.join(" ");
+
+                outputElement.value +=
+                    text + "\n";
+
+                outputElement.scrollTop =
+                    outputElement.scrollHeight;
+            },
+
+
+            printErr(...args) {
+
+                console.error(...args);
+
+                const text = args.join(" ");
+
+                outputElement.value +=
+                    "ERROR: " + text + "\n";
+
+                outputElement.scrollTop =
+                    outputElement.scrollHeight;
+            },
+
+
+            canvas: canvasElement,
+
+            setStatus: setStatus,
+
+            totalDependencies: 0,
+
+
+            monitorRunDependencies(left) {
+
+                this.totalDependencies =
+                    Math.max(
+                        this.totalDependencies,
+                        left
+                    );
+
+                setStatus(
+                    left
+                        ? "Preparing... (" +
+                          (
+                              this.totalDependencies -
+                              left
+                          ) +
+                          "/" +
+                          this.totalDependencies +
+                          ")"
+
+                        : "All downloads complete."
+                );
+            },
+
+
+            /*
+             * Called when the WebAssembly
+             * runtime is ready.
+             */
+
+            onRuntimeInitialized() {
+
+                console.log(
+                    "WebAssembly runtime ready"
+                );
+
+                resolveWasmReady();
+
+                setStatus("");
+
+            }
+
+        };
+
+
+        setStatus("Downloading...");
+
+
+        /*
+         * Background Music Controller
+         */
+        const bgMusic = document.getElementById("bg-music");
+        const musicToggleBtn = document.getElementById("music-toggle-btn");
+        if (bgMusic) {
+            bgMusic.volume = 0.4;
+            bgMusic.addEventListener("play", () => updateMusicUI(true));
+            bgMusic.addEventListener("pause", () => updateMusicUI(false));
+        }
+
+        function updateMusicUI(isPlaying) {
+            if (!musicToggleBtn) return;
+            if (isPlaying) {
+                musicToggleBtn.textContent = "Music: On";
+                musicToggleBtn.classList.add("playing");
+            } else {
+                musicToggleBtn.textContent = "Music: Off";
+                musicToggleBtn.classList.remove("playing");
+            }
+        }
+
+        if (musicToggleBtn && bgMusic) {
+            musicToggleBtn.addEventListener("click", () => {
+                if (bgMusic.paused) {
+                    bgMusic.play()
+                        .then(() => updateMusicUI(true))
+                        .catch(err => console.warn("Audio play prevented:", err));
+                } else {
+                    bgMusic.pause();
+                    updateMusicUI(false);
+                }
+            });
+        }
+
+        function ensureMusicPlaying() {
+            if (bgMusic && bgMusic.paused) {
+                bgMusic.play()
+                    .then(() => updateMusicUI(true))
+                    .catch(err => console.warn("Autoplay blocked:", err));
+            }
+        }
+
+        /*
+         * Replay loader
+         */
+
+        document
+            .getElementById("replay-form")
+            .addEventListener(
+                "submit",
+                async function(event) {
+
+                    event.preventDefault();
+                    ensureMusicPlaying();
+
+
+                    const logId =
+                        document
+                            .getElementById("log-id")
+                            .value;
+
+
+                    const replayStatus =
+                        document
+                            .getElementById(
+                                "replay-status"
+                            );
+
+
+                    try {
+
+                        replayStatus.textContent =
+                            "Loading replay...";
+
+                        const response = await fetch(`/api/logs/${encodeURIComponent(logId)}`)
+                        if (!response.ok) {
+
+                            throw new Error(
+                                `HTTP ${response.status}`
+                            );
+
+                        }
+
+
+
+                        const buffer =
+                            await response.arrayBuffer();
+
+
+
+                        await wasmReady;
+
+
+
+                        try {
+
+                            Module.FS.unlink(
+                                "/selected.pbrp"
+                            );
+
+                        } catch (e) {
+
+                        }
+
+
+
+                        Module.FS.writeFile(
+                            "/selected.pbrp",
+                            new Uint8Array(buffer)
+                        );
+
+
+                        console.log(
+                            "Replay written:",
+                            buffer.byteLength,
+                            "bytes"
+                        );
+
+
+
+                        const result =
+                            Module.ccall(
+                                "load_replay_from_file",
+                                "number",
+                                [],
+                                []
+                            );
+
+
+                        if (result !== 0) {
+
+                            throw new Error(
+                                "C++ replay parser rejected the file"
+                            );
+
+                        }
+
+
+                        replayStatus.textContent =
+                            `Replay ${logId} loaded successfully.`;
+
+                        const videoControls = document.getElementById("video-controls");
+                        if (videoControls) {
+                            videoControls.classList.add("visible");
+                        }
+
+                    }
+
+                    catch (error) {
+
+                        console.error(error);
+
+                        replayStatus.textContent =
+                            `Error: ${error.message}`;
+
+                    }
+                }
+            );
+
+        /*
+         * Video Playback & Timeline Scrubber Controller
+         */
+        let isScrubbing = false;
+        const scrubber = document.getElementById("tick-scrubber");
+        const ctrlCurTick = document.getElementById("ctrl-current-tick");
+        const ctrlTotTicks = document.getElementById("ctrl-total-ticks");
+        const playPauseBtn = document.getElementById("ctrl-play-pause");
+        const restartBtn = document.getElementById("ctrl-restart");
+        const prevBtn = document.getElementById("ctrl-prev");
+        const nextBtn = document.getElementById("ctrl-next");
+        const speedBtns = document.querySelectorAll(".speed-btn");
+
+        function updatePlayPauseBtn(paused) {
+            if (playPauseBtn) {
+                playPauseBtn.textContent = paused ? "Play" : "Pause";
+            }
+        }
+
+        if (playPauseBtn) {
+            playPauseBtn.addEventListener("click", () => {
+                if (typeof Module !== "undefined" && Module.ccall && Module._toggle_playback) {
+                    const cur = Module.ccall("get_current_tick", "number", [], []);
+                    const tot = Module.ccall("get_total_ticks", "number", [], []);
+                    const paused = Module.ccall("is_playback_paused", "number", [], []);
+
+                    if (tot > 0 && cur >= tot) {
+                        Module.ccall("seek_tick", null, ["number"], [0]);
+                        Module.ccall("set_playback_paused", null, ["number"], [0]);
+                        ensureMusicPlaying();
+                    } else {
+                        Module.ccall("toggle_playback", null, [], []);
+                        if (paused) {
+                            ensureMusicPlaying();
+                        } else if (bgMusic && !bgMusic.paused) {
+                            bgMusic.pause();
+                        }
+                    }
+                    const nowPaused = Module.ccall("is_playback_paused", "number", [], []);
+                    updatePlayPauseBtn(nowPaused);
+                }
+            });
+        }
+
+        if (restartBtn) {
+            restartBtn.addEventListener("click", () => {
+                if (typeof Module !== "undefined" && Module.ccall && Module._seek_tick) {
+                    Module.ccall("seek_tick", null, ["number"], [0]);
+                    Module.ccall("set_playback_paused", null, ["number"], [0]);
+                    ensureMusicPlaying();
+                    updatePlayPauseBtn(false);
+                }
+            });
+        }
+
+        if (prevBtn) {
+            prevBtn.addEventListener("click", () => {
+                if (typeof Module !== "undefined" && Module.ccall && Module._step_tick) {
+                    Module.ccall("step_tick", null, ["number"], [-20]);
+                }
+            });
+        }
+
+        if (nextBtn) {
+            nextBtn.addEventListener("click", () => {
+                if (typeof Module !== "undefined" && Module.ccall && Module._step_tick) {
+                    Module.ccall("step_tick", null, ["number"], [20]);
+                }
+            });
+        }
+
+        speedBtns.forEach(btn => {
+            btn.addEventListener("click", () => {
+                const speed = parseFloat(btn.dataset.speed);
+                if (typeof Module !== "undefined" && Module.ccall && Module._set_playback_speed) {
+                    Module.ccall("set_playback_speed", null, ["number"], [speed]);
+                    speedBtns.forEach(b => b.classList.remove("active"));
+                    btn.classList.add("active");
+                }
+            });
+        });
+
+        if (scrubber) {
+            scrubber.addEventListener("input", (e) => {
+                isScrubbing = true;
+                const target = parseInt(e.target.value, 10);
+                if (ctrlCurTick) ctrlCurTick.textContent = target;
+                if (typeof Module !== "undefined" && Module.ccall && Module._seek_tick) {
+                    Module.ccall("seek_tick", null, ["number"], [target]);
+                }
+            });
+
+            scrubber.addEventListener("change", () => {
+                isScrubbing = false;
+            });
+        }
+
+        // Global keyboard shortcuts (when not focused on form input fields)
+        window.addEventListener("keydown", (e) => {
+            if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) {
+                return;
+            }
+            if (typeof Module === "undefined" || !Module.ccall || !Module._toggle_playback) return;
+            const tot = Module.ccall("get_total_ticks", "number", [], []);
+            if (tot <= 0) return;
+
+            if (e.code === "Space") {
+                e.preventDefault();
+                if (playPauseBtn) playPauseBtn.click();
+            } else if (e.code === "ArrowLeft") {
+                e.preventDefault();
+                if (prevBtn) prevBtn.click();
+            } else if (e.code === "ArrowRight") {
+                e.preventDefault();
+                if (nextBtn) nextBtn.click();
+            } else if (e.key === "r" || e.key === "R") {
+                e.preventDefault();
+                if (restartBtn) restartBtn.click();
+            }
+        });
+
+        /*
+         * Real-time Scoreboard & Leaderboard Updater
+         */
+        function pollScoreboard() {
+            if (typeof Module !== "undefined" && Module.ccall && Module._get_current_tick) {
+                try {
+                    const curTick = Module.ccall("get_current_tick", "number", [], []);
+                    const totTicks = Module.ccall("get_total_ticks", "number", [], []);
+                    const isPaused = Module.ccall("is_playback_paused", "number", [], []);
+
+                    if (totTicks > 0) {
+                        const videoControls = document.getElementById("video-controls");
+                        if (videoControls && !videoControls.classList.contains("visible")) {
+                            videoControls.classList.add("visible");
+                        }
+                    }
+
+                    document.getElementById("current-tick").textContent = curTick;
+                    document.getElementById("total-ticks").textContent = totTicks;
+                    if (ctrlCurTick && !isScrubbing) ctrlCurTick.textContent = curTick;
+                    if (ctrlTotTicks) ctrlTotTicks.textContent = totTicks;
+
+                    if (scrubber) {
+                        scrubber.max = totTicks;
+                        if (!isScrubbing) {
+                            scrubber.value = curTick;
+                        }
+                    }
+
+                    const progress = totTicks > 0 ? (curTick / totTicks) * 100 : 0;
+                    document.getElementById("tick-progress-bar").style.width = progress + "%";
+
+                    // Stop background music and update button when replay finishes
+                    if (totTicks > 0 && curTick >= totTicks) {
+                        if (bgMusic && !bgMusic.paused) {
+                            bgMusic.pause();
+                            bgMusic.currentTime = 0;
+                            updateMusicUI(false);
+                        }
+                        updatePlayPauseBtn(true);
+                    } else {
+                        updatePlayPauseBtn(isPaused !== 0);
+                    }
+
+                    for (let p = 1; p <= 4; p++) {
+                        const tiles = Module.ccall("get_player_tiles", "number", ["number"], [p]);
+                        const pct = (tiles / 100).toFixed(1); // 100x100 = 10,000 tiles; divide by 100 for %
+
+                        const scoreEl = document.getElementById(`p${p}-score`);
+                        const percentEl = document.getElementById(`p${p}-percent`);
+                        const barEl = document.getElementById(`p${p}-bar`);
+
+                        if (scoreEl) scoreEl.textContent = tiles.toLocaleString() + " tiles";
+                        if (percentEl) percentEl.textContent = pct + "%";
+                        if (barEl) barEl.style.width = Math.min(100, Math.max(0, pct)) + "%";
+                    }
+                } catch (e) {
+                    // Ignore transient errors before WASM is fully initialized
+                }
+            }
+            requestAnimationFrame(pollScoreboard);
+        }
+        requestAnimationFrame(pollScoreboard);
+
+        window.onerror =
+        window.onunhandledrejection =
+            function(error) {
+
+                console.error(error);
+
+                setStatus(
+                    "Exception thrown - check console"
+                );
+
+                spinnerElement.style.display =
+                    "none";
+
+            };
+
+    </script>
+
+
+
+    <script
+        async
+        type="text/javascript"
+        src="index.js">
+    </script>
+
+</body>
+
+</html>

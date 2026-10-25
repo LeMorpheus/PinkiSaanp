@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PinkiSaanp Replay</title>
+<style>
+  /* Pink & white only. */
+  :root {
+    --white: #ffffff;
+    --blush: #fff0f6;
+    --petal: #ffd6e8;
+    --rose: #ffadd2;
+    --flamingo: #ff85c0;
+    --pink: #f759ab;
+    --hot: #eb2f96;
+    --deep: #c41d7f;
+    --ink: #9e1068;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--white); color: var(--ink);
+    font: 14px/1.4 "Segoe UI", system-ui, sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    padding: 14px 16px; border-bottom: 2px solid var(--petal); background: var(--blush);
+  }
+  header h1 { margin: 0; font-size: 20px; color: var(--hot); letter-spacing: .5px; }
+  header .sub { color: var(--pink); }
+  main { display: flex; gap: 16px; padding: 16px; flex-wrap: wrap; }
+  .board { flex: 1 1 520px; min-width: 0; }
+  canvas {
+    width: 100%; max-width: 760px; aspect-ratio: 1 / 1; display: block;
+    border: 2px solid var(--rose); border-radius: 6px; background: var(--white);
+    image-rendering: pixelated;
+  }
+  .side { flex: 0 1 340px; min-width: 260px; }
+  .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
+  button {
+    border: 1.5px solid var(--pink); background: var(--white); color: var(--deep);
+    border-radius: 6px; padding: 5px 12px; font: inherit; cursor: pointer;
+  }
+  button:hover { background: var(--blush); }
+  button.primary { background: var(--hot); color: var(--white); border-color: var(--hot); }
+  input[type=range] { accent-color: var(--hot); }
+  .scrub { width: 100%; max-width: 760px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--petal); }
+  th { color: var(--pink); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .swatch { display: inline-block; width: 14px; height: 14px; border-radius: 3px;
+            border: 1.5px solid var(--deep); vertical-align: -2px; margin-right: 6px; }
+  tr.dead td { color: var(--rose); text-decoration: line-through; }
+  .state {
+    display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px;
+    background: var(--petal); color: var(--deep); font-weight: 600;
+  }
+  .card { border: 1.5px solid var(--petal); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+  .card h2 { margin: 0 0 6px; font-size: 13px; color: var(--hot); text-transform: uppercase; letter-spacing: .6px; }
+  #events { max-height: 220px; overflow: auto; font-size: 12.5px; }
+  #events div { padding: 2px 0; border-bottom: 1px dashed var(--petal); }
+  .drop { color: var(--pink); font-size: 12.5px; }
+  @media (max-width: 640px) { main { padding: 12px 16px; } .side { flex-basis: 100%; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>PinkiSaanp</h1>
+  <span class="sub">replay viewer &middot; <span id="meta">drop a replay JSON here</span></span>
+</header>
+<main>
+  <section class="board">
+    <canvas id="cv" width="760" height="760"></canvas>
+    <input id="scrub" class="scrub" type="range" min="0" max="0" value="0">
+    <div class="controls">
+      <button id="play" class="primary">Play</button>
+      <button id="back">&lsaquo; Step</button>
+      <button id="fwd">Step &rsaquo;</button>
+      <label>Speed <input id="speed" type="range" min="1" max="40" value="12"></label>
+      <span id="frame"></span>
+    </div>
+    <div class="drop">Load another game: <input id="file" type="file" accept=".json"></div>
+  </section>
+  <aside class="side">
+    <div class="card">
+      <h2>Scoreboard</h2>
+      <table><thead><tr><th>Bot</th><th>State</th><th class="num">Score</th><th class="num">Land</th></tr></thead>
+      <tbody id="score"></tbody></table>
+    </div>
+    <div class="card">
+      <h2>Events</h2>
+      <div id="events"></div>
+    </div>
+  </aside>
+</main>
+<script>
+const REPLAY = /*__REPLAY__*/null;
+// Six pink shades + patterns keep players apart without leaving the palette.
+const SHADES = ['#eb2f96', '#ffadd2', '#f759ab', '#ffd6e8', '#ff85c0', '#c41d7f'];
+const TRAIL = ['#9e1068', '#f759ab', '#c41d7f', '#ff85c0', '#eb2f96', '#ffadd2'];
+const PATTERN = ['solid', 'dots', 'stripes', 'grid', 'diag', 'rings'];
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let rep = null, frame = 0, playing = false, timer = null, patterns = [];
+
+function makePattern(kind, base, cell) {
+  const c = document.createElement('canvas');
+  const s = Math.max(4, Math.round(cell));
+  c.width = c.height = s;
+  const g = c.getContext('2d');
+  g.fillStyle = base; g.fillRect(0, 0, s, s);
+  g.strokeStyle = '#ffffff'; g.fillStyle = '#ffffff'; g.lineWidth = Math.max(1, s / 10);
+  if (kind === 'dots') { g.beginPath(); g.arc(s / 2, s / 2, s / 6, 0, 7); g.fill(); }
+  if (kind === 'stripes') { g.fillRect(0, s * 0.42, s, s * 0.16); }
+  if (kind === 'grid') { g.strokeRect(s * 0.2, s * 0.2, s * 0.6, s * 0.6); }
+  if (kind === 'diag') { g.beginPath(); g.moveTo(0, s); g.lineTo(s, 0); g.stroke(); }
+  if (kind === 'rings') { g.beginPath(); g.arc(s / 2, s / 2, s / 3, 0, 7); g.stroke(); }
+  return ctx.createPattern(c, 'repeat');
+}
+
+function slotOf(id) {
+  // Hero (PinkiSaanp) always gets the boldest pink; others follow.
+  const order = rep.players.slice().sort((a, b) => (isHero(b) - isHero(a)) || (a.id - b.id));
+  return order.findIndex(p => p.id === id);
+}
+function isHero(p) { return /^pinki/i.test(p.name) ? 1 : 0; }
+
+function load(r) {
+  rep = r; frame = 0;
+  const cell = cv.width / Math.max(r.w, r.h);
+  patterns = r.players.map(p => {
+    const k = slotOf(p.id) % SHADES.length;
+    return makePattern(PATTERN[k], SHADES[k], cell);
+  });
+  document.getElementById('scrub').max = r.frames.length - 1;
+  document.getElementById('meta').textContent =
+    r.w + '×' + r.h + ' · ' + r.players.length + ' bots · ' + (r.frames.length - 1) + ' steps';
+  const ev = document.getElementById('events');
+  ev.innerHTML = '';
+  (r.events || []).forEach(e => {
+    const d = document.createElement('div');
+    d.textContent = 'step ' + e[0] + ': ' + e[1] + ' — ' + e[2];
+    d.style.cursor = 'pointer';
+    d.onclick = () => { frame = Math.min(r.frames.length - 1, e[0] + 1); draw(); };
+    ev.appendChild(d);
+  });
+  draw();
+}
+
+function draw() {
+  if (!rep) return;
+  const f = rep.frames[frame];
+  const W = rep.w, H = rep.h, cell = cv.width / Math.max(W, H);
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, cv.width, cv.height);
+  // faint grid
+  ctx.strokeStyle = '#fff0f6'; ctx.lineWidth = 1;
+  for (let i = 0; i <= W; i++) { ctx.beginPath(); ctx.moveTo(i * cell, 0); ctx.lineTo(i * cell, H * cell); ctx.stroke(); }
+  for (let j = 0; j <= H; j++) { ctx.beginPath(); ctx.moveTo(0, j * cell); ctx.lineTo(W * cell, j * cell); ctx.stroke(); }
+  const byId = {}; rep.players.forEach((p, i) => byId[p.id] = i);
+  // territory (y grows up in the engine: flip for the screen)
+  for (let i = 0; i < f.o.length; i++) {
+    const ch = f.o[i];
+    if (ch === '.') continue;
+    const pi = byId[+ch];
+    ctx.fillStyle = patterns[pi];
+    const x = i % W, y = H - 1 - Math.floor(i / W);
+    ctx.fillRect(x * cell, y * cell, cell, cell);
+  }
+  // trails
+  f.p.forEach(p => {
+    if (!p.a) return;
+    const k = slotOf(p.id) % TRAIL.length;
+    ctx.fillStyle = TRAIL[k];
+    p.t.forEach(c => {
+      const x = c % W, y = H - 1 - Math.floor(c / W);
+      ctx.fillRect(x * cell + cell * 0.22, y * cell + cell * 0.22, cell * 0.56, cell * 0.56);
+    });
+  });
+  // heads
+  f.p.forEach(p => {
+    if (!p.a) return;
+    const pl = rep.players[byId[p.id]];
+    const x = p.h % W, y = H - 1 - Math.floor(p.h / W);
+    ctx.fillStyle = isHero(pl) ? '#9e1068' : '#c41d7f';
+    ctx.fillRect(x * cell + 1, y * cell + 1, cell - 2, cell - 2);
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+    ctx.strokeRect(x * cell + 2, y * cell + 2, cell - 4, cell - 4);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold ' + Math.round(cell * 0.45) + 'px Segoe UI, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(isHero(pl) ? 'PS' : pl.name[0].toUpperCase(), x * cell + cell / 2, y * cell + cell / 2 + 1);
+  });
+  // scoreboard
+  const counts = {}; for (const ch of f.o) if (ch !== '.') counts[ch] = (counts[ch] || 0) + 1;
+  const rows = f.p.slice().sort((a, b) => b.sc - a.sc).map(p => {
+    const pl = rep.players[byId[p.id]];
+    const k = slotOf(p.id) % SHADES.length;
+    const st = p.st ? '<span class="state">' + p.st.replace('_SAFELY', '') + '</span>' : '';
+    return '<tr class="' + (p.a ? '' : 'dead') + '"><td><span class="swatch" style="background:' + SHADES[k] +
+      '"></span>' + pl.name + '</td><td>' + st + '</td><td class="num">' + p.sc +
+      '</td><td class="num">' + (counts[p.id] || 0) + '</td></tr>';
+  });
+  document.getElementById('score').innerHTML = rows.join('');
+  document.getElementById('frame').textContent = 'step ' + f.s + ' / ' + (rep.frames.length - 1);
+  document.getElementById('scrub').value = frame;
+}
+
+function tick() {
+  if (!rep) return;
+  if (frame < rep.frames.length - 1) { frame++; draw(); }
+  else stop();
+}
+function start() {
+  playing = true; document.getElementById('play').textContent = 'Pause';
+  clearInterval(timer);
+  timer = setInterval(tick, 1000 / +document.getElementById('speed').value);
+}
+function stop() { playing = false; document.getElementById('play').textContent = 'Play'; clearInterval(timer); }
+
+document.getElementById('play').onclick = () => playing ? stop() : start();
+document.getElementById('fwd').onclick = () => { stop(); tick(); };
+document.getElementById('back').onclick = () => { stop(); frame = Math.max(0, frame - 1); draw(); };
+document.getElementById('speed').oninput = () => { if (playing) start(); };
+document.getElementById('scrub').oninput = e => { stop(); frame = +e.target.value; draw(); };
+document.getElementById('file').onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  f.text().then(t => load(JSON.parse(t)));
+};
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  const f = e.dataTransfer.files[0]; if (f) f.text().then(t => load(JSON.parse(t)));
+});
+document.addEventListener('keydown', e => {
+  if (e.key === ' ') { e.preventDefault(); playing ? stop() : start(); }
+  if (e.key === 'ArrowRight') { stop(); tick(); }
+  if (e.key === 'ArrowLeft') { stop(); frame = Math.max(0, frame - 1); draw(); }
+});
+if (REPLAY) load(REPLAY);
+</script>
+</body>
+</html>

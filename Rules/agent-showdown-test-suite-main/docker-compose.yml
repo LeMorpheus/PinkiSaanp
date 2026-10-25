@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  # Web Visualizer service (opens on http://localhost:8000)
+  # Run with: docker compose up visualizer
+  visualizer:
+    build: .
+    image: codewars-kit
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./out:/app/out:ro
+    command: ["view"]
+
+  # Match Runner service
+  # Run with: docker compose run --rm play starter_bot random_walk
+  play:
+    build: .
+    image: codewars-kit
+    volumes:
+      - ./out:/app/out
+      - ./my_bots:/app/my_bots
+    command: ["play", "starter_bot", "random_walk"]

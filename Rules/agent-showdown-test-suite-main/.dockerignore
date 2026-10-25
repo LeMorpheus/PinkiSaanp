@@ -1,0 +1,4 @@
+out/replays/*.pbrp
+out/logs/*.log
+__pycache__/
+*.pyc

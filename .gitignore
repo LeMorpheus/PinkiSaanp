@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+logs/
+replays/
+results/
+References/
+.claude/
+tools/*.pbrp
+Rules/agent-showdown-test-suite-main/out/replays/*.pbrp
+Rules/agent-showdown-test-suite-main/out/logs/*.log

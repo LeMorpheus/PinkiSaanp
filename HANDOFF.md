@@ -121,8 +121,8 @@ Tried and dropped (vs V2, +-~400 each): heavy-blob relocation -226, BFS-neck cro
 
 ## Contest sprint (field: us + HolyLike + PinkiV2/PinkiShip + wall_hug, 64 games, seeded, rotated)
 - `baselines/HolyLike` (centre-biased, steal-aware bombing) stands in for the_holy_one; `baselines/PinkiShip` is the previously shipped zip.
-- Now on by default: `bomb_min` 0 (any positive expansion bomb), `widen` 1.0 (bomb gain counts tiles that thicken 1-wide necks), `bombtimer` (per-enemy bomb cooldown from seen throws; while an enemy with a ready bomb is within 6, step away onto thick land). Bundle vs HolyLike +658 ± 513 (REF −649 ± 543).
-- FINAL_RESULT
+- Tried as a bundle (options, off by default): `bomb_min` 0 (any positive expansion bomb), `widen` 1.0 (bomb gain counts tiles that thicken 1-wide necks), `bombtimer` 1 (per-enemy bomb cooldown from seen throws; keep 6+ away from an enemy whose bomb may be ready). vs HolyLike looked +658 ± 513, but the freeze A/B vs the shipped build lost: 30-34, −699 ± 476 (64 games, 0 TLE, 0 errors). Not shipped.
+- `baselines/RandChaos`: random walker that fires every ability as soon as it has charge (stand-in for the contest's random_walker).
 - Not done for lack of time: neck defence under threat, endgame lead/trail modes, consolidation. Off-by-default options (`guard`, `fp`, `trap`, `late`, `endavoid`, `chaos`) all lost or were flat.
 
 ## Highest-value next steps

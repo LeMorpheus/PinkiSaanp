@@ -44,9 +44,9 @@ class Brain:
         self.opt_trap = v.get('trap', 0)           # wall in enemy heads with a single free neighbour
         self.opt_bblock2 = v.get('bblock2', 0)     # stop bullets fired inside our land early
         holy = v.get('holy', 0)                    # opponent model: bomb at once, steal-aware, centre-bound
-        self.bomb_min = v.get('bomb_min', 0)        # throw an expansion bomb whenever one is ready
+        self.bomb_min = v.get('bomb_min', 7)        # least gain for an expansion bomb
         self.centre_bias = v.get('centre_bias', 1.0 if holy else 0)
-        self.opt_bombtimer = v.get('bombtimer', 1)   # keep off enemies whose bomb may be ready
+        self.opt_bombtimer = v.get('bombtimer', 0)   # keep off enemies whose bomb may be ready
         self.endavoid = v.get('endavoid', 0)         # from this tick: keep 8 off every enemy head
         self.trace = v.get('trace')                # debug: [t0, t1] dump views
         self.tracepos = v.get('tracepos', 0)       # debug: log position every tick

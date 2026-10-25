@@ -49,7 +49,7 @@ class Planner:
         self.nodeadline = opts.get('nodeadline', 0)     # debug: deterministic planning
         self.chaos = opts.get('chaos', 0.0)              # weight of the reckless-enemy exposure penalty
         self.bomb_steal = opts.get('bombsteal', 0) or opts.get('holy', 0)
-        self.widen = opts.get('widen', 1.0)              # bomb value per tile that thickens a neck
+        self.widen = opts.get('widen', 0)              # bomb value per tile that thickens a neck
         self._reach = None
         self.w = world
         self.b = world.b

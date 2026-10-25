@@ -34,6 +34,12 @@ class Brain:
                       'attack': 0, 'evade': 0, 'wallkill': 0, 'bombkill': 0, 'block': 0}
 
     # ------------------------------------------------------------------
+    def prime(self, rows, action):
+        """Ingest frame 0 after `action` was already sent for it (see bot.py)."""
+        self.w.update(rows, None)
+        self.w.note_action(action)
+        self.last_action = action
+
     def act(self, rows):
         t0 = perf_counter()
         w = self.w

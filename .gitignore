@@ -8,3 +8,8 @@ References/
 tools/*.pbrp
 Rules/agent-showdown-test-suite-main/out/replays/*.pbrp
 Rules/agent-showdown-test-suite-main/out/logs/*.log
+Rules/agent-showdown-test-suite-main/out/
+Rules/agent-showdown-test-suite-main/runs/
+Rules/agent-showdown-test-suite-main/my_bots/*
+!Rules/agent-showdown-test-suite-main/my_bots/starter_bot/
+!Rules/agent-showdown-test-suite-main/my_bots/starter_bot_cpp/

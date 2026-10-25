@@ -22,6 +22,14 @@ BULLET_CHARS = set('GHJKL')
 FREE_CHARS = set('.ABCD')
 STABLE = set('.ABCD*')
 N = 100
+_WALL_TABLE = bytes(1 if c == ord('#') else 0 for c in range(256))
+
+
+def _mask_of(rows, ch):
+    """Bitboard (stride N + 1) of the cells holding `ch`, built via int(str, 2)."""
+    tr = str.maketrans({c: '0' for c in set(''.join(rows)) if c != ch} | {ch: '1'})
+    bits = '0'.join(r.translate(tr) for r in rows)
+    return int(bits[::-1], 2)
 
 
 class Ability:
@@ -63,20 +71,11 @@ class World:
         self.bomb_ch = None
         self.bullet_ch = None
         self.x, self.y = 3, 3
-        wall = brk = 0
-        mem = bytearray(N * N)
-        for y, row in enumerate(ROWS):
-            for x, ch in enumerate(row):
-                i = y * N + x
-                mem[i] = ord(ch)
-                if ch == '#':
-                    wall |= bit[i]
-                elif ch == '*':
-                    brk |= bit[i]
-        self.wall = wall                # unbreakable (static)
-        self.brk = brk                  # breakable walls (belief)
-        self.static_wall = bytearray(1 if bit[i] & wall else 0 for i in range(N * N))
-        self.mem = mem
+        flat = ''.join(ROWS)
+        self.wall = _mask_of(ROWS, '#')     # unbreakable (static)
+        self.brk = _mask_of(ROWS, '*')      # breakable walls (belief)
+        self.static_wall = bytearray(flat.encode().translate(_WALL_TABLE))
+        self.mem = bytearray(flat.encode())
         self.seen = [-1] * (N * N)
         self.mine = 0
         self.enemy = {}                 # label -> paint mask (belief)

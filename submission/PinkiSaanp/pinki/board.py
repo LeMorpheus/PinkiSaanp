@@ -22,24 +22,31 @@ class Board:
     __slots__ = ('w', 'h', 'n', 'stride', 'bit', 'p2i', 'full', 'border', 'nbr', '_disk')
 
     def __init__(self, w, h):
+        # Startup time counts against the first move: keep this to a few ms.
         self.w, self.h = w, h
         self.n = n = w * h
         self.stride = s = w + 1
-        self.bit = [1 << ((i // w) * s + i % w) for i in range(n)]
-        self.p2i = [-1] * (s * h)
+        self.bit = [1 << p for y in range(0, s * h, s) for p in range(y, y + w)]
+        p2i = [-1] * (s * h)
+        for y in range(h):
+            p2i[y * s:y * s + w] = range(y * w, y * w + w)
+        self.p2i = p2i
+        row = (1 << w) - 1
+        edges = 1 | (1 << (w - 1))
         full = border = 0
-        nbr = []
-        for i in range(n):
-            x, y = i % w, i // w
-            self.p2i[y * s + x] = i
-            b = self.bit[i]
-            full |= b
-            if x == 0 or y == 0 or x == w - 1 or y == h - 1:
-                border |= b
-            nbr.append(tuple((y + DY[d]) * w + x + DX[d]
-                             if 0 <= x + DX[d] < w and 0 <= y + DY[d] < h else -1
-                             for d in range(4)))
-        self.full, self.border, self.nbr = full, border, nbr
+        for y in range(h):
+            full |= row << (y * s)
+            border |= (row if y == 0 or y == h - 1 else edges) << (y * s)
+        up = [i - w for i in range(n)]
+        up[:w] = [-1] * w
+        down = [i + w for i in range(n)]
+        down[n - w:] = [-1] * w
+        left = [i - 1 for i in range(n)]
+        left[::w] = [-1] * h
+        right = [i + 1 for i in range(n)]
+        right[w - 1::w] = [-1] * h
+        self.full, self.border = full, border
+        self.nbr = list(zip(up, left, down, right))
         self._disk = {}
 
     def idx(self, x, y):

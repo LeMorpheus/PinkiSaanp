@@ -21,10 +21,12 @@ class Brain:
         self.variant = variant or {}
         self.rng = random.Random(self.variant['seed']) if 'seed' in self.variant else None
         self.w = World()
-        self.w.book = bool(self.variant.get('book', 1))
-        self.w.freshcut = bool(self.variant.get('freshcut', 1))
+        # Belief fixes (all measured neutral-to-worse in win rate / placement; off):
+        self.w.objkeep = bool(self.variant.get('objkeep', 0))
+        self.w.book = bool(self.variant.get('book', 0))
+        self.w.freshcut = bool(self.variant.get('freshcut', 0))
         self.w.staleprop = bool(self.variant.get('staleprop', 0))
-        self.w.restore = bool(self.variant.get('restore', 1))
+        self.w.restore = bool(self.variant.get('restore', 0))
         self.plan = None
         self.pi = 0
         self.state = EXPAND
@@ -52,6 +54,8 @@ class Brain:
         self.centre_bias = v.get('centre_bias', 1.0 if holy else 0)
         self.opt_bombtimer = v.get('bombtimer', 0)   # keep off enemies whose bomb may be ready
         self.endavoid = v.get('endavoid', 0)         # from this tick: keep 8 off every enemy head
+        self.rank_from = v.get('rank', 0)            # from this tick: hold when clearly 1st
+        self.holding = False
         self.trace = v.get('trace')                # debug: [t0, t1] dump views
         self.tracepos = v.get('tracepos', 0)       # debug: log position every tick
         self.log = log
@@ -138,6 +142,10 @@ class Brain:
             self.fails = 0
         self.avoid = {c: u for c, u in self.avoid.items() if u > w.t}
         self._advance_plan()
+        # Endgame, clearly 1st: protect the lead (no open trails, keep off enemy heads).
+        self.holding = bool(self.rank_from and w.t >= self.rank_from and area > 400 and w.clearly_first())
+        if self.holding:
+            self._count('holding')
 
         start = deadline - BUDGET
         planner = Planner(w, deadline, extra_block=b.mask(self.avoid), rng=self.rng, opts=self.variant)
@@ -253,13 +261,13 @@ class Brain:
             return self._fallback(tac)
 
         # ---- stay out of bomb-kill reach of enemies whose bomb may be ready -------
-        if (self.opt_bombtimer or (self.endavoid and w.t >= self.endavoid)) and in_home:
+        if (self.opt_bombtimer or self.holding or (self.endavoid and w.t >= self.endavoid)) and in_home:
             act = self._keep_off(tac)
             if act is not None:
                 return act
 
         # ---- attack an exposed enemy trail in view ------------------------------
-        atk = self._attack(planner)
+        atk = None if self.holding else self._attack(planner)
         if atk is not None:
             self.state = ATTACK
             self.stats['attack'] += 1
@@ -383,7 +391,7 @@ class Brain:
         w = self.w
         b = w.b
         bit = b.bit
-        late = self.endavoid and w.t >= self.endavoid
+        late = self.holding or (self.endavoid and w.t >= self.endavoid)
         radius = 8 if late else 6
         foes = [c for lab, c in tac.heads.items()
                 if (late or w.enemy_bomb_ready(lab)) and
@@ -523,7 +531,7 @@ class Brain:
             return None  # enemy just around: no fresh excursions, hold thick land
         risky = self._enemy_near(25, 60)
         area = popcount(w.mine)
-        if self.late and w.t >= self.late and area > 400:
+        if (self.late and w.t >= self.late and area > 400) or self.holding:
             return None     # endgame: an open trail risks everything for a few tiles; hold thick land
         # The bigger we are, the more a cut of our open trail would cost: shrink loops.
         big = self.variant.get('max_leg', 40)
@@ -673,12 +681,12 @@ class Brain:
         passable = planner.passable | w.mine
         dist = b.distance_field(bit[w.head], passable, limit=6)
         best = None
-        cells = [c for c in b.cells(planner.enemy_all & w.vis) if 0 < dist[c] < INF]
-        cells.sort(key=dist.__getitem__)
-        for c in cells:
+        for c in b.cells(planner.enemy_all & w.vis):
             dd = dist[c]
-            if planner.out_of_time():
-                break           # each check floods enemy land: nearest cells first, then stop
+            if dd >= INF or dd == 0:
+                continue
+            if planner.out_of_time(-0.010):
+                break           # each check floods enemy land: never run far past the budget
             steal = planner.steal_by(bit[c])
             if steal < self.atk_min:
                 continue

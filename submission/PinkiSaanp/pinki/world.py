@@ -104,12 +104,17 @@ class World:
         self.lost_track = 0
         self.prev_vis = 0
         self.fresh_loss = 0
+        self.objkeep = False            # keep paint belief under bullets/bombs
         self.book = True                # book steals made by our bullets/bombs out of view
         self.freshcut = True            # drop detached own land only at cuts seen in view
         self.booked = 0
         self.staleprop = False          # infer out-of-view thefts from stale tiles in view
         self.unbooked = 0
         self.restore = False            # take back dropped land when it shows up as ours
+        self.vis_buckets = []           # union of views per 100 ticks (recency of what we know)
+        self.est = {}                   # label -> estimated land (seen paint, stale counted half)
+        self.est_ours = 0
+        self.free_tiles = 0
         self.dropped = 0
         self.area_hist = []
 
@@ -141,6 +146,8 @@ class World:
         self._observe(rows)
         self._predict_effects()
         self._enforce_connectivity()
+        if self.t % 10 == 0:
+            self._estimate_ranks()
         self.area_hist.append(popcount(self.mine))
 
     def _learn_label(self, ch):
@@ -360,13 +367,18 @@ class World:
         # A bullet or bomb hides the paint under it but does not change it (our own bullet
         # on the trail tile behind us must not cut our head off in belief): keep the old
         # belief there.  A head does claim its tile.
-        known = vis & ~(obj_v & ~head_v)
+        known = vis & ~(obj_v & ~head_v) if self.objkeep else vis
         # Own tiles we watched turn into something else (in view last frame and now): only
         # these can be cuts we actually saw.  Tiles we had not looked at for a while may
         # just correct a stale belief.
         self.fresh_loss = self.mine & known & self.prev_vis & ~mine_v
         stale = self.mine & known & ~self.prev_vis & ~mine_v
         self.prev_vis = vis
+        k = t // 100
+        vb = self.vis_buckets
+        while len(vb) <= k:
+            vb.append(0)
+        vb[k] |= vis
         gain = mine_v & ~self.mine
         self.mine = (self.mine & ~known) | mine_v
         if self.dropped:
@@ -510,6 +522,47 @@ class World:
             self.brk &= ~filled
             for k in self.enemy:
                 self.enemy[k] &= ~filled
+
+    def _estimate_ranks(self):
+        """Land per enemy from the paint we have seen: seen in the last ~300 ticks counts
+        fully, older sightings half (it may have been stolen since)."""
+        recent = 0
+        for m in self.vis_buckets[-3:]:
+            recent |= m
+        self.est = {lab: popcount(E & recent) + 0.5 * popcount(E & ~recent) for lab, E in self.enemy.items()}
+        self.est_ours = popcount(self.mine)
+        if not self.free_tiles:
+            self.free_tiles = popcount(self.b.full & ~self.wall)
+
+    def placement(self, ours=None, est=None):
+        est = self.est if est is None else est
+        ours = self.est_ours if ours is None else ours
+        return 1 + sum(1 for v in est.values() if v > ours)
+
+    def steal_weight(self, lab, n):
+        """Value multiplier for stealing n tiles from `lab`: a steal that moves us past
+        someone, or knocks the leader off the top, is worth a bit more than its tiles."""
+        est = self.est
+        if not est or lab not in est or n <= 0:
+            return 1.0
+        ours = self.est_ours
+        after = dict(est)
+        after[lab] = max(0.0, est[lab] - n)
+        if self.placement(ours + n, after) < self.placement(ours, est):
+            return 1.3
+        top = max(est.values())
+        if est[lab] == top and top > ours:
+            rest = max([ours + n] + [v for l, v in est.items() if l != lab])
+            if after[lab] < rest:
+                return 1.3
+        return 1.0
+
+    def clearly_first(self):
+        """Estimated 1st by a margin (enemy land is only partly seen, hence the absolute floor)."""
+        if not self.est:
+            return False
+        ours = self.est_ours
+        return ours >= 1.25 * max(self.est.values()) and ours >= 0.35 * self.free_tiles
 
     def _stale_steal(self, stale, en_v, vis, mine_v):
         """A blob of land we believed ours comes into view in enemy paint: it was stolen out

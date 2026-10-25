@@ -49,6 +49,7 @@ class Planner:
         self.nodeadline = opts.get('nodeadline', 0)     # debug: deterministic planning
         self.chaos = opts.get('chaos', 0.0)              # weight of the reckless-enemy exposure penalty
         self.bomb_steal = opts.get('bombsteal', 0) or opts.get('holy', 0)
+        self.rankw = opts.get('rankw', 0)                # placement bonus on steals
         self.widen = opts.get('widen', 0)              # bomb value per tile that thickens a neck
         self._reach = None
         self.w = world
@@ -514,7 +515,8 @@ class Planner:
         total = 0
         for lab, E in w.enemy.items():
             if E & removed:
-                total += popcount(w.cut_off(lab, E & ~removed, removed))
+                n = popcount(w.cut_off(lab, E & ~removed, removed))
+                total += n * w.steal_weight(lab, n) if self.rankw else n
         return total
 
     def best_wall_cut(self):
@@ -538,8 +540,8 @@ class Planner:
                     continue
                 if not self._los(hx, hy, x, y):
                     continue
-                if self.out_of_time():
-                    return best         # every check floods enemy land: big maps get slow
+                if self.out_of_time(-0.010):
+                    return best         # every check floods enemy land: never run far past the budget
                 g = self.steal_by(bit[c])
                 if g and (best is None or g > best[0]):
                     best = (g, i, j)

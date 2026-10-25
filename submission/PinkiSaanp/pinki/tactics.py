@@ -24,6 +24,7 @@ class Tactics:
         self.block = w.wall | w.brk | w.objs
         self.move_block = self.block | avoid     # also tiles where our moves keep failing
         self.short_crack = False
+        self.bk_thr = 0.45             # least kill chance worth a bomb
         self.heads = {}
         for lab, (cell, ts) in w.heads.items():
             if ts == w.t:
@@ -137,7 +138,7 @@ class Tactics:
                         px, py = p % b.w, p // b.w
                         if (px, py) != (cx, cy) and abs(px - cx) + abs(py - cy) <= 2:
                             score += pr
-                    if score >= 0.45 and (best is None or score > best[0]):
+                    if score >= self.bk_thr and (best is None or score > best[0]):
                         best = (score, i, j)
         if best is None:
             return None

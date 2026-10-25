@@ -152,6 +152,7 @@ class Brain:
         planner = Planner(w, deadline, extra_block=b.mask(self.avoid), rng=self.rng, opts=self.variant)
         tac = Tactics(w, planner, avoid=b.mask(self.avoid))
         tac.short_crack = self.opt_bblock2
+        tac.bk_thr = self.variant.get('bk_thr', 0.45)
         discount = self.plan.capture if self.plan else 0
 
         # ---- 1. dodge enemy bombs that would cut our head off ----------------
@@ -536,7 +537,10 @@ class Brain:
             return None     # endgame: an open trail risks everything for a few tiles; hold thick land
         # The bigger we are, the more a cut of our open trail would cost: shrink loops.
         big = self.variant.get('max_leg', 40)
-        if area > 2500:
+        calm = self.variant.get('calm', 0) and not self._enemy_near(30, 100)
+        if calm:
+            pass            # nobody seen around for a while: realistic bots won't race to our trail
+        elif area > 2500:
             big = min(big, 10)
         elif area > 1200:
             big = min(big, 18)

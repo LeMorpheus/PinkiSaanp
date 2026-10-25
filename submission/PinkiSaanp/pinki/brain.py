@@ -23,6 +23,8 @@ class Brain:
         self.w = World()
         self.w.book = bool(self.variant.get('book', 1))
         self.w.freshcut = bool(self.variant.get('freshcut', 1))
+        self.w.staleprop = bool(self.variant.get('staleprop', 0))
+        self.w.restore = bool(self.variant.get('restore', 1))
         self.plan = None
         self.pi = 0
         self.state = EXPAND
@@ -671,10 +673,12 @@ class Brain:
         passable = planner.passable | w.mine
         dist = b.distance_field(bit[w.head], passable, limit=6)
         best = None
-        for c in b.cells(planner.enemy_all & w.vis):
+        cells = [c for c in b.cells(planner.enemy_all & w.vis) if 0 < dist[c] < INF]
+        cells.sort(key=dist.__getitem__)
+        for c in cells:
             dd = dist[c]
-            if dd >= INF or dd == 0:
-                continue
+            if planner.out_of_time():
+                break           # each check floods enemy land: nearest cells first, then stop
             steal = planner.steal_by(bit[c])
             if steal < self.atk_min:
                 continue

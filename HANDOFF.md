@@ -122,7 +122,8 @@ Tried and dropped (vs V2, +-~400 each): heavy-blob relocation -226, BFS-neck cro
 ## Contest sprint (field: us + HolyLike + PinkiV2/PinkiShip + wall_hug, 64 games, seeded, rotated)
 - `baselines/HolyLike` (centre-biased, steal-aware bombing) stands in for the_holy_one; `baselines/PinkiShip` is the previously shipped zip.
 - Tried as a bundle (options, off by default): `bomb_min` 0 (any positive expansion bomb), `widen` 1.0 (bomb gain counts tiles that thicken 1-wide necks), `bombtimer` 1 (per-enemy bomb cooldown from seen throws; keep 6+ away from an enemy whose bomb may be ready). vs HolyLike looked +658 ± 513, but the freeze A/B vs the shipped build lost: 30-34, −699 ± 476 (64 games, 0 TLE, 0 errors). Not shipped.
-- `baselines/RandChaos`: random walker that fires every ability as soon as it has charge (stand-in for the contest's random_walker).
+- `baselines/RandChaos`: random walker that fires every ability as soon as it has charge (stand-in for the contest's random_walker). The shipped build won only 52% of games in a RandChaos×2 + random field.
+- **Own-area belief was badly wrong** (replay check: `bsim` re-runs `World` on a replay with the logged actions, `tracepos` logs area per tick). Fixed in `world.py`: (1) a bullet/bomb on a tile hides but keeps its paint (our own bullet on the trail tile behind us used to "cut" our head off: belief 2600 -> 0); (2) detached own land is dropped only next to a cut seen happening in view (stale tiles coming into view used to wipe thousands of believed tiles); (3) steals by our bullets/bombs (credible `cut_off`) and bomb kills are booked. Still open: big steals we never see (belief can't know) and thefts out of view (`staleprop` option tried: helps some games, wrecks others; off).
 - Not done for lack of time: neck defence under threat, endgame lead/trail modes, consolidation. Off-by-default options (`guard`, `fp`, `trap`, `late`, `endavoid`, `chaos`) all lost or were flat.
 
 ## Highest-value next steps

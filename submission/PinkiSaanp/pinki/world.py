@@ -107,6 +107,10 @@ class World:
         self.book = True                # book steals made by our bullets/bombs out of view
         self.freshcut = True            # drop detached own land only at cuts seen in view
         self.booked = 0
+        self.staleprop = False          # infer out-of-view thefts from stale tiles in view
+        self.unbooked = 0
+        self.restore = False            # take back dropped land when it shows up as ours
+        self.dropped = 0
         self.area_hist = []
 
     # ------------------------------------------------------------------
@@ -361,10 +365,23 @@ class World:
         # these can be cuts we actually saw.  Tiles we had not looked at for a while may
         # just correct a stale belief.
         self.fresh_loss = self.mine & known & self.prev_vis & ~mine_v
+        stale = self.mine & known & ~self.prev_vis & ~mine_v
         self.prev_vis = vis
+        gain = mine_v & ~self.mine
         self.mine = (self.mine & ~known) | mine_v
+        if self.dropped:
+            # Land we once dropped as cut off shows up as our paint again: the cut was a
+            # belief error, so the rest of that piece is most likely ours too.
+            self.dropped &= ~known
+            back = b.dilate(gain) & self.dropped
+            if back:
+                back = b.flood(back, self.dropped)
+                self.dropped &= ~back
+                self.mine |= back
         for k in self.enemy:
             self.enemy[k] = (self.enemy[k] & ~known) | en_v[k]
+        if self.staleprop and popcount(stale) >= 8:
+            self._stale_steal(stale, en_v, vis, mine_v)
         self.brk = (self.brk & ~vis) | brk_v
         self.objs = obj_v
 
@@ -494,6 +511,34 @@ class World:
             for k in self.enemy:
                 self.enemy[k] &= ~filled
 
+    def _stale_steal(self, stale, en_v, vis, mine_v):
+        """A blob of land we believed ours comes into view in enemy paint: it was stolen out
+        of view, and so, probably, is the unseen land beyond it.  Give the enemy the unseen
+        own land nearer to that blob than to the own land we can see."""
+        b = self.b
+        s = b.stride
+        for lab, E in en_v.items():
+            S = stale & E
+            if popcount(S) < 8 or not (S & (S >> 1) & (S >> s) & (S >> (s + 1))):
+                continue                    # a line (a trail or bullet), not a stolen area
+            R = self.mine & ~vis
+            fs, fo = S, mine_v | b.bit[self.head]
+            lost = 0
+            for _ in range(120):
+                fs = b.dilate(fs) & R
+                fo = b.dilate(fo) & R
+                fs &= ~fo
+                if not fs:
+                    break
+                lost |= fs
+                R &= ~(fs | fo)
+                if not R:
+                    break
+            if lost:
+                self.mine &= ~lost
+                self.enemy[lab] |= lost
+                self.unbooked += popcount(lost)
+
     def _book_kill(self, centre, disk):
         """Our bomb went off on an enemy head that cannot have left the kill diamond since we
         saw it: all its land is ours now."""
@@ -560,7 +605,10 @@ class World:
             return
         seeds = b.dilate(self.fresh_loss) & rest
         if seeds:
-            self.mine &= ~b.flood(seeds, rest)
+            cut = b.flood(seeds, rest)
+            self.mine &= ~cut
+            if self.restore:
+                self.dropped |= cut
 
     # ------------------------------------------------------------------
     def note_action(self, action):

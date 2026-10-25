@@ -538,6 +538,8 @@ class Planner:
                     continue
                 if not self._los(hx, hy, x, y):
                     continue
+                if self.out_of_time():
+                    return best         # every check floods enemy land: big maps get slow
                 g = self.steal_by(bit[c])
                 if g and (best is None or g > best[0]):
                     best = (g, i, j)

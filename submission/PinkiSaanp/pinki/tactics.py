@@ -23,6 +23,7 @@ class Tactics:
         b = self.b
         self.block = w.wall | w.brk | w.objs
         self.move_block = self.block | avoid     # also tiles where our moves keep failing
+        self.short_crack = False
         self.heads = {}
         for lab, (cell, ts) in w.heads.items():
             if ts == w.t:
@@ -69,6 +70,29 @@ class Tactics:
             if ij is None:
                 continue
             value = popcount(E) + 50
+            if best is None or value > best[0]:
+                best = (value, ij)
+        if best is None:
+            return None
+        return 'C %d %d' % best[1]
+
+    def trap(self):
+        """Wall the only free tile next to a visible enemy head: it can never move again
+        unless it breaks walls (simple bots do not), so it stops chasing, cutting and growing."""
+        w = self.w
+        b = self.b
+        bit = b.bit
+        if not w.build.ready(w.t):
+            return None
+        best = None
+        for lab, h in self.heads.items():
+            free = [n for n in b.nbr[h] if n >= 0 and not bit[n] & self.block and n != w.head]
+            if len(free) != 1:
+                continue
+            ij = self.can_build(free[0])
+            if ij is None:
+                continue
+            value = popcount(w.enemy.get(lab, 0)) + 30
             if best is None or value > best[0]:
                 best = (value, ij)
         if best is None:
@@ -154,6 +178,19 @@ class Tactics:
                         best = (loss, 'C %d %d' % ij)
                     placed = True
                     break
+            if not placed and can_wall and self.short_crack:
+                # Fired from inside our land: stop it early so it paints a short crack
+                # instead of a line right across us.
+                for k in range(1, min(len(path), 7)):
+                    ij = self.can_build(path[k])
+                    if ij is None:
+                        continue
+                    A3 = M & ~(b.mask(path[:k]) | b.bit[c])
+                    left = total - popcount(b.flood(b.dilate(hb) & A3, A3))
+                    if left < loss - 25 and (best is None or loss - left > best[0]):
+                        best = (loss - left, 'C %d %d' % ij)
+                        placed = True
+                    break
             if not placed:
                 # Body-block: a head on the bullet's next tiles breaks it.
                 for d, n in enumerate(b.nbr[w.head]):
@@ -164,6 +201,53 @@ class Tactics:
         if best is None:
             return None
         return best[1]
+
+    # ------------------------------------------------------------------
+    def wallkill_dodge(self, preferred, home, radius=6):
+        """Never end a move hanging on a single own tile while an enemy head is close.
+
+        One wall on that tile cuts us off from everything (simple bots do exactly this).
+        Pick, among moves that leave >= 2 own neighbours (the tile we vacate counts),
+        the one making most progress toward `home`; None if the preferred move is safe.
+        """
+        w = self.w
+        b = self.b
+        bit = b.bit
+        h = w.head
+        if not any(max(abs(c % b.w - w.x), abs(c // b.w - w.y)) <= radius for c in self.heads.values()):
+            return None
+        M = w.mine
+        hb = bit[h]
+
+        def nb_after(cell):
+            if cell == h:
+                return len(self.own_neighbours(h, M))
+            return len(self.own_neighbours(cell, M | hb))
+
+        opts = [('I', h)]
+        for d, n in enumerate(b.nbr[h]):
+            if n >= 0 and not bit[n] & self.move_block:
+                opts.append((KEYS[d], n))
+        pref = next((c for a, c in opts if a == preferred), None)
+        if pref is not None and nb_after(pref) >= 2:
+            return None
+        safe = [(a, c) for a, c in opts if nb_after(c) >= 2]
+        if not safe:
+            return None
+        # progress toward home: BFS rings out of it
+        dist = {}
+        ring = home
+        todo = {c for _, c in safe}
+        for k in range(40):
+            for c in list(todo):
+                if bit[c] & ring:
+                    dist[c] = k
+                    todo.discard(c)
+            if not todo:
+                break
+            ring = b.dilate(ring) & (self.p.passable | M)
+        best = min(safe, key=lambda ac: (dist.get(ac[1], 99), ac[0] == 'I'))
+        return best[0] if best[0] != preferred else None
 
     # ------------------------------------------------------------------
     def enemy_bombs(self):

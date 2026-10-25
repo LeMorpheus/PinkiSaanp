@@ -10,6 +10,9 @@ from .tactics import Tactics
 from .world import World
 
 BUDGET = 0.028          # seconds of planning per move (judge limit is 100 ms; keep worst case < 50)
+WATCHDOG = 0.040        # past this, skip every optional stage and just make a safe move
+GUARD_AGE = 8           # sightings this recent still count as a threat to our trail
+STYLE_MARGIN = {'aggr': 3, 'neutral': 1, 'timid': -1}
 EXPAND, RETREAT, ATTACK, ROAM = 'EXPAND', 'RETREAT', 'ATTACK', 'ROAM'
 
 
@@ -33,6 +36,13 @@ class Brain:
         self.frontier_skipped = False
         self.atk_min = v.get('atk_min', 6)         # smallest credible steal worth walking for
         self.atk_score = v.get('atk_score', 3.0)
+        self.opt_guard = v.get('guard', 0)         # race-based tail guard (vs reckless bots)
+        self.opt_fp = v.get('fp', 0)               # opponent fingerprints widen/narrow its margin
+        self.opt_wkdodge = v.get('wkdodge', 0)     # keep >= 2 own neighbours near enemy heads
+        self.late = v.get('late', 0)               # from this tick on: no new loops once we hold land
+        self.alert_ticks = v.get('alert_ticks', 12)  # no new loops this long after an enemy came close
+        self.opt_trap = v.get('trap', 0)           # wall in enemy heads with a single free neighbour
+        self.opt_bblock2 = v.get('bblock2', 0)     # stop bullets fired inside our land early
         self.trace = v.get('trace')                # debug: [t0, t1] dump views
         self.tracepos = v.get('tracepos', 0)       # debug: log position every tick
         self.log = log
@@ -120,8 +130,10 @@ class Brain:
         self.avoid = {c: u for c, u in self.avoid.items() if u > w.t}
         self._advance_plan()
 
+        start = deadline - BUDGET
         planner = Planner(w, deadline, extra_block=b.mask(self.avoid), rng=self.rng, opts=self.variant)
         tac = Tactics(w, planner, avoid=b.mask(self.avoid))
+        tac.short_crack = self.opt_bblock2
         discount = self.plan.capture if self.plan else 0
 
         # ---- 1. dodge enemy bombs that would cut our head off ----------------
@@ -136,12 +148,25 @@ class Brain:
         if act:
             self.stats['block'] += 1
             return act
+        # ---- 1d. never hang on one own tile with an enemy head in wall range ----
+        if self.opt_wkdodge and w.mine:
+            act = tac.wallkill_dodge(self._preview(), self.base if not in_home else w.mine)
+            if act:
+                self.plan = None if act != self._preview() else self.plan
+                self._count('wkdodge')
+                return act
         # ---- 2. instant kill: wall the last own tile behind an enemy head ----
         act = tac.wall_kill()
         if act:
             self.state = ATTACK
             self.stats['wallkill'] += 1
             return act
+        if self.opt_trap:
+            act = tac.trap()
+            if act:
+                self.state = ATTACK
+                self._count('trap')
+                return act
         # ---- 3. bomb that isolates an enemy head when it blows ------------------
         act = tac.bomb_kill()
         if act:
@@ -152,7 +177,8 @@ class Brain:
         ne = tac.nearest_enemy()
         if ne is not None and ne[0] <= 7:
             self.alert = w.t
-            if tac.thin() or (self.plan is not None and self.plan.kind == 'loop'):
+            if (tac.thin() or (self.plan is not None and self.plan.kind == 'loop')) and \
+                    not (self.opt_guard and not in_home):
                 act = tac.retreat_step()
                 if act:
                     self.plan = None
@@ -162,7 +188,16 @@ class Brain:
 
         # ---- danger: an enemy head near our open trail -------------------
         trail = w.mine & ~self.base
-        threat = self._threat(trail) if (trail and not in_home) else None
+        if self.opt_guard:
+            if trail and not in_home:
+                act = self._guard(planner, trail)
+                if act:
+                    self.state = RETREAT
+                    self._count('guard')
+                    return act
+            threat = None
+        else:
+            threat = self._threat(trail) if (trail and not in_home) else None
         if threat is not None:
             self.state = RETREAT
             act = self._retreat(planner)
@@ -181,6 +216,9 @@ class Brain:
                     self.stats['bullets'] += 1
                     return 'G' + KEYS[p.bullet_dir]
             p.bullet_at = None  # cannot shoot: walk the rest
+
+        if perf_counter() - start > WATCHDOG:
+            return self._fallback(tac)
 
         # ---- abilities: bombs, bullets, wall cuts -----------------------------
         if w.bomb.ready(w.t):
@@ -202,6 +240,9 @@ class Brain:
                 self.stats['bullets'] += 1
                 return 'G' + KEYS[g[1]]
 
+        if perf_counter() - start > WATCHDOG:
+            return self._fallback(tac)
+
         # ---- attack an exposed enemy trail in view ------------------------------
         atk = self._attack(planner)
         if atk is not None:
@@ -211,6 +252,8 @@ class Brain:
             self.pi = 0
 
         # ---- plan --------------------------------------------------------------
+        if self.plan is None and perf_counter() - start > WATCHDOG:
+            return self._fallback(tac)
         if self.plan is None:
             self.state = EXPAND
             self.plan = self._new_plan(planner)
@@ -218,6 +261,102 @@ class Brain:
             self.stats['plans'] += 1
         if self.plan is None:
             return self._hold(tac)
+        return self._step()
+
+    def _fallback(self, tac):
+        """Watchdog: no time left for optional work. Keep following the plan (it returns
+        to our land), else head straight for our land, else stay put inside it."""
+        self._count('watchdog')
+        if self.plan is not None and self.pi < len(self.plan.cells):
+            return self._step()
+        w = self.w
+        if not (w.b.bit[w.head] & w.mine) and self.base:
+            path = w.b.path_to(w.head, self.base, tac.p.passable | w.mine, limit=40)
+            if path:
+                self.plan = Plan(path, 0, len(path), 0, kind='retreat')
+                self.pi = 0
+                return self._step()
+        return 'I' if w.b.bit[w.head] & w.mine else self.safe_move()
+
+    def _guard(self, planner, trail):
+        """Tail guard against reckless bots.
+
+        Any enemy seen in the last GUARD_AGE ticks is assumed to come straight for our
+        open trail (one cell per tick unseen, plus a style margin), or to shoot along a
+        clear line onto it.  If it can get there before we can close, close by the
+        fastest way: a bullet back to our land when that seals sooner, else the shortest
+        path home (dashing on straights).  Otherwise keep the plan.
+        """
+        w = self.w
+        b = w.b
+        bit = b.bit
+        h = w.head
+        base = self.base & ~bit[h]
+        if not base:
+            return None
+        foes = [(lab, cell, w.t - ts) for lab, (cell, ts) in w.heads.items() if w.t - ts <= GUARD_AGE]
+        if not foes:
+            return None
+        passable = planner.passable | w.mine
+        p = self.plan
+        remaining = len(p.cells) - self.pi if p is not None and p.kind in ('loop', 'retreat') else None
+        path = None
+        if p is not None and p.kind == 'retreat':
+            path = p.cells[self.pi:]
+        if not path:
+            path = b.path_to(h, base, passable, limit=60)
+        if not path:
+            return None
+        close = len(path) - (2 if w.dash.ready(w.t) and len(path) >= 3 else 0)
+        seal = None
+        if w.gun.ready(w.t):
+            for d in range(4):
+                line = w.ray(h, d)
+                k = next((i for i, c in enumerate(line[:12]) if bit[c] & base), None)
+                if k is not None and k >= 1:
+                    tt = 2 + k // 3
+                    if seal is None or tt < seal[0]:
+                        seal = (tt, d, line[0])
+        t_close = min(close, seal[0]) if seal else close
+        # Race: distance from each recent sighting to the trail, grown by its age.
+        threat = False
+        reach = trail
+        far = {}
+        todo = {lab: (cell, age) for lab, cell, age in foes}
+        for k in range(0, 25):
+            for lab, (cell, age) in list(todo.items()):
+                if bit[cell] & reach:
+                    far[lab] = k
+                    del todo[lab]
+            if not todo:
+                break
+            reach = b.dilate(reach)
+        for lab, cell, age in foes:
+            margin = STYLE_MARGIN[w.enemy_style(lab)] if self.opt_fp else 1
+            d = far.get(lab)
+            if d is not None and d - age <= t_close + margin:
+                threat = True
+                break
+            if age <= 2 and (not self.opt_fp or w.enemy_style(lab) != 'timid'):
+                # a bullet along a clear row/column onto our trail
+                for dd in range(4):
+                    if any(bit[c] & trail for c in w.ray(cell, dd)[:10]):
+                        threat = True
+                        break
+                if threat:
+                    break
+        if not threat:
+            return None
+        if remaining is not None and p.kind == 'loop' and remaining <= t_close:
+            return None                     # the plan itself closes as fast: keep it
+        if seal is not None and seal[0] <= close:
+            self.plan = None
+            self.bullet_block = (seal[2], w.t + 2)
+            self.stats['bullets'] += 1
+            return 'G' + KEYS[seal[1]]
+        if p is None or p.kind != 'retreat':
+            self.plan = Plan(path, 0, len(path), 0, kind='retreat')
+            self.pi = 0
         return self._step()
 
     def _hold(self, tac):
@@ -331,10 +470,12 @@ class Brain:
     # ------------------------------------------------------------------
     def _new_plan(self, planner):
         w = self.w
-        if w.mine and w.t - self.alert < 12:
+        if w.mine and w.t - self.alert < self.alert_ticks:
             return None  # enemy just around: no fresh excursions, hold thick land
         risky = self._enemy_near(25, 60)
         area = popcount(w.mine)
+        if self.late and w.t >= self.late and area > 400:
+            return None     # endgame: an open trail risks everything for a few tiles; hold thick land
         # The bigger we are, the more a cut of our open trail would cost: shrink loops.
         big = self.variant.get('max_leg', 40)
         if area > 2500:

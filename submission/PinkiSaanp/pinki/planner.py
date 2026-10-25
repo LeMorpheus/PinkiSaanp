@@ -18,6 +18,7 @@ A_LIST = (2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 22, 27, 33, 40)
 B_LIST = (2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 22, 27, 33, 40, 48)
 W_STEAL = 0.8          # extra value of a cell taken from an enemy
 RISK_K = 1.0 / 40000.0
+STYLE_W = {'aggr': 0.8, 'neutral': 0.4, 'timid': 0.15}   # how likely each kind goes for our trail
 
 
 class Plan:
@@ -46,6 +47,8 @@ class Planner:
         opts = opts or {}
         self.risk_k = RISK_K * opts.get('risk_mult', 1.0)
         self.nodeadline = opts.get('nodeadline', 0)     # debug: deterministic planning
+        self.chaos = opts.get('chaos', 0.0)              # weight of the reckless-enemy exposure penalty
+        self._reach = None
         self.w = world
         self.b = world.b
         self.deadline = deadline
@@ -103,6 +106,45 @@ class Planner:
         dens = self.danger(region)
         p = 1.0 - math.exp(-trail_len * cost * dens * self.risk_k)
         return p * popcount(self.M)
+
+    def _enemy_reach(self):
+        """Per recently seen enemy: cumulative BFS rings from where it was, its age, its weight."""
+        if self._reach is None:
+            w = self.w
+            b = self.b
+            free = self.passable | self.M
+            out = []
+            for lab, (cell, ts) in w.heads.items():
+                age = w.t - ts
+                if age > 40:
+                    continue
+                wgt = STYLE_W[w.enemy_style(lab)] * math.exp(-age / 40.0)
+                cum = [b.bit[cell]]
+                cur = cum[0]
+                for _ in range(36):
+                    cur = b.dilate(cur) & free | cur
+                    cum.append(cur)
+                out.append((cum, age, wgt))
+            self._reach = out
+        return self._reach
+
+    def chaos_risk(self, pathmask, cost):
+        """Chance that some enemy, assumed to come straight at us, is on our trail before we close."""
+        safe = 1.0
+        for cum, age, wgt in self._enemy_reach():
+            if not cum[-1] & pathmask:
+                continue
+            lo, hi = 0, len(cum) - 1          # first ring touching the path
+            while lo < hi:
+                mid = (lo + hi) // 2
+                if cum[mid] & pathmask:
+                    hi = mid
+                else:
+                    lo = mid + 1
+            reach = max(0, lo - age)
+            if reach < cost:
+                safe *= 1.0 - wgt * (cost - reach) / cost
+        return 1.0 - safe
 
     # ------------------------------------------------------------------
     def _prefix(self):
@@ -359,6 +401,8 @@ class Planner:
                     plan = alt
         region = pm | new
         pen = self.risk_penalty(plan.trail, plan.cost, region)
+        if self.chaos and self.M:
+            pen += self.chaos * self.chaos_risk(pm, plan.cost) * popcount(self.M)
         plan.gain -= pen
         plan.rate = plan.gain / (plan.cost + 2.0)
         return plan

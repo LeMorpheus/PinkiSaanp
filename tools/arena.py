@@ -56,7 +56,7 @@ def read_variant(name):
 
 
 def play(job):
-    gid, lineup, moves, seeded = job
+    gid, lineup, moves, seeded, tag = job
     args = []
     tmp = []
     for k, name in enumerate(lineup):
@@ -71,8 +71,8 @@ def play(job):
             args.append('my_bots/' + gname)
         else:
             args.append('my_bots/' + name)
-    rep = 'out/replays/a%d.pbrp' % gid
-    logdir = 'runs/a%d' % gid
+    rep = 'out/replays/%sa%d.pbrp' % (tag, gid)
+    logdir = 'runs/%sa%d' % (tag, gid)
     shutil.rmtree(os.path.join(KIT, logdir), ignore_errors=True)
     cmd = ['./testkit', '-n', str(moves), '-r', rep, '--log-dir', logdir] + args
     out = subprocess.run(cmd, cwd=KIT, capture_output=True, text=True).stdout
@@ -107,6 +107,7 @@ def main():
     ap.add_argument('--snap', action='append', default=[], help='NAME=DIR copy of another bot dir')
     ap.add_argument('--start', type=int, default=100)
     ap.add_argument('--src', default=SRC, help='bot dir used for PinkiSaanp and --variant copies')
+    ap.add_argument('--tag', default='', help='prefix for replay/log names (keeps runs apart)')
     args = ap.parse_args()
     variants = dict((v.split('=', 1)[0], json.loads(v.split('=', 1)[1])) for v in args.variant)
     snaps = dict(s.split('=', 1) for s in args.snap)
@@ -116,15 +117,15 @@ def main():
     jobs = []
     for g in range(args.games):
         k = g % len(base) if args.rotate else 0
-        jobs.append((args.start + g, base[k:] + base[:k], args.moves, args.seeded))
+        jobs.append((args.start + g, base[k:] + base[:k], args.moves, args.seeded, args.tag))
     lpath = os.path.join(KIT, 'out', 'lineups.json')
     try:
         with open(lpath) as f:
             lineups = json.load(f)
     except (OSError, ValueError):
         lineups = {}
-    for gid, lineup, _, _ in jobs:
-        lineups['a%d.pbrp' % gid] = lineup
+    for gid, lineup, _, _, tag in jobs:
+        lineups['%sa%d.pbrp' % (tag, gid)] = lineup
     os.makedirs(os.path.dirname(lpath), exist_ok=True)
     with open(lpath, 'w') as f:
         json.dump(lineups, f)

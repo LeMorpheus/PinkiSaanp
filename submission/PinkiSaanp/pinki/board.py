@@ -133,6 +133,38 @@ class Board:
         free = self.full & ~area
         return free & ~self.flood(self.border & free, free)
 
+    def path_to(self, src, targets, passable, limit=80):
+        """Shortest 4-path (cells after src, last one in `targets`) by bitboard BFS layers."""
+        bit = self.bit
+        layers = [bit[src]]
+        seen = cur = bit[src]
+        hit = 0
+        for _ in range(limit):
+            cur = self.dilate(cur) & passable & ~seen
+            if not cur:
+                return None
+            seen |= cur
+            layers.append(cur)
+            hit = cur & targets
+            if hit:
+                break
+        if not hit:
+            return None
+        c = self.cells(hit & -hit)[0]
+        path = [c]
+        nbr = self.nbr
+        for k in range(len(layers) - 2, 0, -1):
+            lay = layers[k]
+            for n in nbr[c]:
+                if n >= 0 and bit[n] & lay:
+                    c = n
+                    break
+            else:
+                return None
+            path.append(c)
+        path.reverse()
+        return path
+
     def distance_field(self, seed, passable, limit=INF):
         dist = [INF] * self.n
         s = self.stride

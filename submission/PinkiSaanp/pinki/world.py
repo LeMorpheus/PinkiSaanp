@@ -95,6 +95,8 @@ class World:
         self.no_build = {}              # cell -> tick until which building there is pointless
         self.build_fail_t = -100
         self.audit = {}                 # action letter -> count, 'failX' -> failed count
+        self.style = {}                 # label -> [approach EMA, sightings, shots seen]
+        self.prev_head = None
         self.moved = True
         self.my_bullets = []            # [path cells, fired_t]
         self.my_bombs = []              # [centre, fired_t]
@@ -117,6 +119,7 @@ class World:
     def update(self, rows, action):
         """Ingest one 11x11 frame (taken after `action` resolved)."""
         rows = [(r + '~' * 11)[:11] for r in rows]
+        self.prev_head = self.head
         if self.label is None:
             self._learn_label(rows[5][5])
         else:
@@ -330,6 +333,8 @@ class World:
                                 self.head_dirs.pop(ch, None)
                         elif prev is not None and prev[0] == i:
                             self.head_dirs.pop(ch, None)
+                        if prev is not None and prev[1] == t - 1:
+                            self._fingerprint(ch, prev[0], i)
                         self.heads[ch] = (i, t)
                     elif ch in BOMBS and ch != self.bomb_ch:
                         bombs[i] = self.foreign_bombs.get(i, t)
@@ -344,6 +349,29 @@ class World:
             self.enemy[k] = (self.enemy[k] & ~vis) | en_v[k]
         self.brk = (self.brk & ~vis) | brk_v
         self.objs = obj_v
+
+    def _fingerprint(self, lab, was, now):
+        """Running estimate of whether an enemy closes in on us (chasers) or backs off (fleers)."""
+        n = N
+        ph, h = self.prev_head, self.head
+        d0 = abs(was % n - ph % n) + abs(was // n - ph // n)
+        d1 = abs(now % n - h % n) + abs(now // n - h // n)
+        if min(d0, d1) > 12:
+            return
+        st = self.style.setdefault(lab, [0.0, 0, 0])
+        st[0] = 0.8 * st[0] + 0.2 * max(-1, min(1, d0 - d1))
+        st[1] += 1
+
+    def enemy_style(self, lab):
+        """'aggr' (approaches us or has shot at us), 'timid' (backs off) or 'neutral'."""
+        st = self.style.get(lab)
+        if st is None:
+            return 'neutral'
+        if st[2] > 0 or (st[1] >= 4 and st[0] > 0.25):
+            return 'aggr'
+        if st[1] >= 4 and st[0] < -0.25:
+            return 'timid'
+        return 'neutral'
 
     def _track_bullets(self, bullets):
         """Foreign bullets with their heading (3-tile jumps or fresh next to a head)."""
@@ -370,6 +398,8 @@ class World:
                         for d, nb in enumerate(b.nbr[hc]):
                             if nb == c:
                                 found = d
+                                st = self.style.setdefault(lab, [0.0, 0, 0])
+                                st[2] += 1          # it just fired: treat as hostile
             if found is None and ch in BULLET_OWNER:
                 # A flying bullet paints its owner's colour behind it: owner paint on
                 # exactly one side (and not ahead) gives the heading.

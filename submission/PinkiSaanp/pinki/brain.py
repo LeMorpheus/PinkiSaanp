@@ -43,6 +43,11 @@ class Brain:
         self.alert_ticks = v.get('alert_ticks', 12)  # no new loops this long after an enemy came close
         self.opt_trap = v.get('trap', 0)           # wall in enemy heads with a single free neighbour
         self.opt_bblock2 = v.get('bblock2', 0)     # stop bullets fired inside our land early
+        holy = v.get('holy', 0)                    # opponent model: bomb at once, steal-aware, centre-bound
+        self.bomb_min = v.get('bomb_min', 0)        # throw an expansion bomb whenever one is ready
+        self.centre_bias = v.get('centre_bias', 1.0 if holy else 0)
+        self.opt_bombtimer = v.get('bombtimer', 1)   # keep off enemies whose bomb may be ready
+        self.endavoid = v.get('endavoid', 0)         # from this tick: keep 8 off every enemy head
         self.trace = v.get('trace')                # debug: [t0, t1] dump views
         self.tracepos = v.get('tracepos', 0)       # debug: log position every tick
         self.log = log
@@ -223,7 +228,7 @@ class Brain:
         # ---- abilities: bombs, bullets, wall cuts -----------------------------
         if w.bomb.ready(w.t):
             bb = planner.best_bomb(discount)
-            if bb and bb[0] >= 7:
+            if bb and bb[0] >= self.bomb_min:
                 self.stats['bombs'] += 1
                 return 'B %d %d' % (bb[1], bb[2])
         if w.build.ready(w.t) and planner.enemy_all & w.vis:
@@ -242,6 +247,12 @@ class Brain:
 
         if perf_counter() - start > WATCHDOG:
             return self._fallback(tac)
+
+        # ---- stay out of bomb-kill reach of enemies whose bomb may be ready -------
+        if (self.opt_bombtimer or (self.endavoid and w.t >= self.endavoid)) and in_home:
+            act = self._keep_off(tac)
+            if act is not None:
+                return act
 
         # ---- attack an exposed enemy trail in view ------------------------------
         atk = self._attack(planner)
@@ -358,6 +369,40 @@ class Brain:
             self.plan = Plan(path, 0, len(path), 0, kind='retreat')
             self.pi = 0
         return self._step()
+
+    def _keep_off(self, tac):
+        """Step (inside our land) away from close enemy heads that could bomb us now.
+
+        A bomb kills a head within the diamond |dx|+|dy| <= 2 of its centre and is thrown
+        up to 4 away, so an enemy within 6 with its bomb off cooldown is a threat.  In the
+        endgame every enemy head within 8 counts."""
+        w = self.w
+        b = w.b
+        bit = b.bit
+        late = self.endavoid and w.t >= self.endavoid
+        radius = 8 if late else 6
+        foes = [c for lab, c in tac.heads.items()
+                if (late or w.enemy_bomb_ready(lab)) and
+                max(abs(c % b.w - w.x), abs(c // b.w - w.y)) <= radius]
+        if not foes:
+            return None
+
+        def gap(cell):
+            return min(max(abs(cell % b.w - c % b.w), abs(cell // b.w - c // b.w)) for c in foes)
+
+        here = gap(w.head)
+        best = None
+        for d, n in enumerate(b.nbr[w.head]):
+            if n < 0 or bit[n] & tac.move_block or not bit[n] & w.mine:
+                continue
+            k = (gap(n), len(tac.own_neighbours(n, w.mine | bit[w.head])) >= 3)
+            if k[0] > here and (best is None or k > best[0]):
+                best = (k, d)
+        if best is None:
+            return None
+        self.plan = None
+        self._count('keepoff')
+        return KEYS[best[1]]
 
     def _hold(self, tac):
         """No safe excursion: stay inside our land, keep away from enemy heads."""
@@ -527,6 +572,8 @@ class Brain:
                     cells = cells[::len(cells) // 40 + 1]
                 for c in cells:
                     score = popcount(b.disk(c, 49) & claim) / (k + 12.0)
+                    if self.centre_bias:
+                        score *= 1.0 + self.centre_bias * (100 - abs(c % b.w - 50) - abs(c // b.w - 50)) / 100.0
                     if best is None or score > best[0]:
                         best = (score, c, k)
             if best is not None and 149.0 / (k + 13.0) <= best[0]:

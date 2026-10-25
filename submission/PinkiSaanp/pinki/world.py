@@ -96,6 +96,7 @@ class World:
         self.build_fail_t = -100
         self.audit = {}                 # action letter -> count, 'failX' -> failed count
         self.style = {}                 # label -> [approach EMA, sightings, shots seen]
+        self.enemy_bomb_t = {}          # label -> tick it last threw a bomb we saw
         self.prev_head = None
         self.moved = True
         self.my_bullets = []            # [path cells, fired_t]
@@ -338,6 +339,8 @@ class World:
                         self.heads[ch] = (i, t)
                     elif ch in BOMBS and ch != self.bomb_ch:
                         bombs[i] = self.foreign_bombs.get(i, t)
+                        if i not in self.foreign_bombs:
+                            self.enemy_bomb_t[LABELS[BOMBS.index(ch)]] = t - 1
                     elif ch in BULLET_CHARS and ch != self.bullet_ch:
                         bullets[i] = ch
         self.foreign_bombs = bombs
@@ -361,6 +364,10 @@ class World:
         st = self.style.setdefault(lab, [0.0, 0, 0])
         st[0] = 0.8 * st[0] + 0.2 * max(-1, min(1, d0 - d1))
         st[1] += 1
+
+    def enemy_bomb_ready(self, lab):
+        """False only while we know its bomb is still on cooldown (16 moves between throws)."""
+        return self.t >= 15 and self.t - self.enemy_bomb_t.get(lab, -100) >= 16
 
     def enemy_style(self, lab):
         """'aggr' (approaches us or has shot at us), 'timid' (backs off) or 'neutral'."""

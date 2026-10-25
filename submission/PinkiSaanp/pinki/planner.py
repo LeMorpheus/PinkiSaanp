@@ -48,6 +48,8 @@ class Planner:
         self.risk_k = RISK_K * opts.get('risk_mult', 1.0)
         self.nodeadline = opts.get('nodeadline', 0)     # debug: deterministic planning
         self.chaos = opts.get('chaos', 0.0)              # weight of the reckless-enemy exposure penalty
+        self.bomb_steal = opts.get('bombsteal', 0) or opts.get('holy', 0)
+        self.widen = opts.get('widen', 1.0)              # bomb value per tile that thickens a neck
         self._reach = None
         self.w = world
         self.b = world.b
@@ -435,6 +437,14 @@ class Planner:
         bit = b.bit
         hx, hy = w.x, w.y
         reach = b.dilate(self.M | self.hb)
+        thin = 0
+        if self.widen and self.M:
+            # tiles next to our necks (land with <= 2 own neighbours): filling them thickens us
+            s = b.stride
+            M = self.M
+            # >= 3 own neighbours always includes an opposite pair
+            three = ((M << 1) & (M >> 1) & ((M << s) | (M >> s))) | ((M << s) & (M >> s) & ((M << 1) | (M >> 1)))
+            thin = b.dilate(M & ~three) & ~M
         cands = []
         for j in range(-4, 5):
             for i in range(-4, 5):
@@ -451,14 +461,26 @@ class Planner:
                     continue
                 new = disk & ~self.M & ~self.hb
                 g = self.value_of(new & ~discount) + 0.2 * popcount(new & discount)
+                if thin:
+                    g += self.widen * popcount(new & thin)
                 cands.append((g, i, j, new))
         if not cands:
             return None
         cands.sort(reverse=True)
+        pool = cands[:4]
+        ea = self.enemy_all
+        if self.bomb_steal and ea:
+            # Disks over enemy necks cut whole territories off their owner.
+            over = sorted((c for c in cands[4:] if c[3] & ea), key=lambda c: -popcount(c[3] & ea))
+            pool = pool + over[:4]
         best = None
-        for g, i, j, new in cands[:4]:
+        for g, i, j, new in pool:
+            if best is not None and self.out_of_time():
+                break
             extra = self.capture_of(new) & ~new
             g2 = g + self.value_of(extra & ~discount)
+            if self.bomb_steal and new & ea:
+                g2 += self.steal_by(new & ea)
             if best is None or g2 > best[0]:
                 best = (g2, i, j)
         return best

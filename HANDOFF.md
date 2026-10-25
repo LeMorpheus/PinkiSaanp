@@ -119,6 +119,12 @@ Head-to-head standard error is ~400 tiles per 128 games: outcomes are near-binar
 
 Tried and dropped (vs V2, +-~400 each): heavy-blob relocation -226, BFS-neck crossing w2 -178 / w5 -4435, perimeter term +282/-304, visible-shooter line dodge +68, endgame centre hold +82, small loops on alert +49, bomb steal-awareness +380/+461 alone but -115 +- 278 on top of top=100 (256 games), lane plugs -150, cut-before-bomb ordering -115, head_age 4 -29, steal booking -88 (slow), risk x4 -147, snipe +117, bomb-split dodge -169, attack thresholds 30 +362 / off -316 (attacks are worth it). Code for these is in git history (commit a095ac3).
 
+## Contest sprint (field: us + HolyLike + PinkiV2/PinkiShip + wall_hug, 64 games, seeded, rotated)
+- `baselines/HolyLike` (centre-biased, steal-aware bombing) stands in for the_holy_one; `baselines/PinkiShip` is the previously shipped zip.
+- Now on by default: `bomb_min` 0 (any positive expansion bomb), `widen` 1.0 (bomb gain counts tiles that thicken 1-wide necks), `bombtimer` (per-enemy bomb cooldown from seen throws; while an enemy with a ready bomb is within 6, step away onto thick land). Bundle vs HolyLike +658 ± 513 (REF −649 ± 543).
+- FINAL_RESULT
+- Not done for lack of time: neck defence under threat, endgame lead/trail modes, consolidation. Off-by-default options (`guard`, `fp`, `trap`, `late`, `endavoid`, `chaos`) all lost or were flat.
+
 ## Highest-value next steps
 1. Losses are dominated by bullets and bombs cutting necks out of view (77% of cutters are >10 cells from our head); the head is usually on the light side of a cut. No structural defence tried so far beat the noise.
 2. Expansion speed is the most reliable lever (deterministic, transfers to any field): `tools/opening.py` measures it in seconds. Better loop pre-ranking or cheaper exact evaluation should pay off.

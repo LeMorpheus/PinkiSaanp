@@ -18,6 +18,30 @@ except AttributeError:  # pragma: no cover
         return bin(m).count('1')
 
 
+def _los_table(r=4):
+    """Tiles strictly between our tile and offset (i, j) that the centre-to-centre segment
+    touches (closed squares: a pass through a corner counts both side tiles)."""
+    table = {}
+    for j in range(-r, r + 1):
+        for i in range(-r, r + 1):
+            if not 0 < i * i + j * j <= r * r:
+                continue
+            cells = []
+            for cy in range(min(0, j), max(0, j) + 1):
+                for cx in range(min(0, i), max(0, i) + 1):
+                    if (cx, cy) in ((0, 0), (i, j)):
+                        continue
+                    s = [2 * i * (2 * cy + ey) - 2 * j * (2 * cx + ex) for ex in (-1, 1) for ey in (-1, 1)]
+                    if all(v > 0 for v in s) or all(v < 0 for v in s):
+                        continue
+                    cells.append((cx, cy))
+            table[(i, j)] = tuple(cells)
+    return table
+
+
+LOS_TABLE = _los_table()
+
+
 class Board:
     __slots__ = ('w', 'h', 'n', 'stride', 'bit', 'p2i', 'full', 'border', 'nbr', '_disk')
 
@@ -48,6 +72,18 @@ class Board:
         self.full, self.border = full, border
         self.nbr = list(zip(up, left, down, right))
         self._disk = {}
+
+    def los(self, x0, y0, x1, y1, stop):
+        """Build/throw line of sight from tile (x0, y0) to (x1, y1): no `stop` tile in between."""
+        cells = LOS_TABLE.get((x1 - x0, y1 - y0))
+        if cells is None:
+            return False
+        w, h, bit = self.w, self.h, self.bit
+        for dx, dy in cells:
+            x, y = x0 + dx, y0 + dy
+            if not (0 <= x < w and 0 <= y < h) or bit[y * w + x] & stop:
+                return False
+        return True
 
     def idx(self, x, y):
         return y * self.w + x

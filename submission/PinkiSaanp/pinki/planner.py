@@ -41,8 +41,13 @@ class Plan:
 
 
 class Planner:
-    def __init__(self, world, deadline, extra_block=0, rng=None):
+    def __init__(self, world, deadline, extra_block=0, rng=None, opts=None):
         self.rng = rng
+        opts = opts or {}
+        self.perim_w = opts.get('perim_w', 0.0)
+        self.risk_k = RISK_K * opts.get('risk_mult', 1.0)
+        self.bomb_steal = opts.get('bombsteal', 0)
+        self._perim_m = None
         self.w = world
         self.b = world.b
         self.deadline = deadline
@@ -71,6 +76,16 @@ class Planner:
         new = (b.holes(area) | pathmask) & ~self.M & ~self.w.wall
         return new
 
+    def perimeter(self, m):
+        """Cells of m with a 4-neighbour outside m (thin land is all perimeter)."""
+        s = self.b.stride
+        return popcount(m & ~(m & (m << 1) & (m >> 1) & (m << s) & (m >> s)))
+
+    def perim_m(self):
+        if self._perim_m is None:
+            self._perim_m = self.perimeter(self.M | self.hb)
+        return self._perim_m
+
     def dist_m(self):
         if self._dist_m is None:
             self._dist_m = self.b.distance_field(self.M | self.hb, self.passable | self.M, limit=120)
@@ -98,7 +113,7 @@ class Planner:
         if not self.M:
             return 0.0
         dens = self.danger(region)
-        p = 1.0 - math.exp(-trail_len * cost * dens * RISK_K)
+        p = 1.0 - math.exp(-trail_len * cost * dens * self.risk_k)
         return p * popcount(self.M)
 
     # ------------------------------------------------------------------
@@ -356,6 +371,8 @@ class Planner:
                     plan = alt
         region = pm | new
         pen = self.risk_penalty(plan.trail, plan.cost, region)
+        if self.perim_w and self.M:
+            pen += self.perim_w * (self.perimeter(self.M | self.hb | region) - self.perim_m())
         plan.gain -= pen
         plan.rate = plan.gain / (plan.cost + 2.0)
         return plan
@@ -408,10 +425,20 @@ class Planner:
         if not cands:
             return None
         cands.sort(reverse=True)
+        pool = cands[:4]
+        ea = self.enemy_all
+        if self.bomb_steal and ea:
+            # Disks over enemy necks can cut whole territories off their owner.
+            over = sorted((c for c in cands[4:] if c[3] & ea), key=lambda c: -popcount(c[3] & ea))
+            pool = pool + over[:6]
         best = None
-        for g, i, j, new in cands[:4]:
+        for g, i, j, new in pool:
+            if best is not None and self.out_of_time():
+                break
             extra = self.capture_of(new) & ~new
             g2 = g + self.value_of(extra & ~discount)
+            if self.bomb_steal and new & ea:
+                g2 += self.steal_by(new & ea)
             if best is None or g2 > best[0]:
                 best = (g2, i, j)
         return best
@@ -440,9 +467,15 @@ class Planner:
 
     # ------------------------------------------------------------------
     def steal_by(self, removed):
-        """Enemy cells cut off from their owner if `removed` stops being theirs."""
+        """Enemy cells cut off from their owner if `removed` stops being theirs.
+
+        Only credible cuts count: the part assumed to stay with the owner (its head's
+        side, or else its largest known piece) must be sealed off by tiles we have
+        actually seen, otherwise it may still connect through land we never saw.
+        """
         w = self.w
         b = self.b
+        known = w.seen_ever | removed
         total = 0
         for lab, E in w.enemy.items():
             if not (E & removed):
@@ -454,18 +487,23 @@ class Planner:
             if head and w.t - head[1] <= 1:
                 hb = b.bit[head[0]]
                 kept = b.flood(b.dilate(hb) & E2, E2)
+                if b.ring(kept | hb) & ~known:
+                    continue
+                total += popcount(E2 & ~kept)
             else:
-                kept = 0
+                comps = []
                 rest = E2
-                guard = 0
-                while rest and guard < 12:
+                while rest and len(comps) < 12:
                     low = rest & -rest
                     comp = b.flood(low, rest)
                     rest &= ~comp
-                    if popcount(comp) > popcount(kept):
-                        kept = comp
-                    guard += 1
-            total += popcount(E2 & ~kept)
+                    comps.append(comp)
+                if rest:
+                    comps.append(rest)
+                big = max(comps, key=popcount)
+                for comp in comps:
+                    if comp is not big and not (b.ring(comp) & ~known):
+                        total += popcount(comp)
         return total
 
     def best_wall_cut(self):
@@ -485,7 +523,7 @@ class Planner:
                 if not (0 <= x < b.w and 0 <= y < b.h):
                     continue
                 c = y * b.w + x
-                if not (bit[c] & self.enemy_all & w.vis) or bit[c] & w.objs:
+                if not (bit[c] & self.enemy_all & w.vis) or bit[c] & w.objs or w.no_build.get(c, -1) >= w.t:
                     continue
                 if not self._los(hx, hy, x, y):
                     continue
@@ -497,16 +535,4 @@ class Planner:
     def _los(self, x0, y0, x1, y1):
         """No objects on tiles crossed by the segment between tile centres."""
         w = self.w
-        b = self.b
-        bit = b.bit
-        stop = w.wall | w.brk | w.objs
-        steps = max(abs(x1 - x0), abs(y1 - y0)) * 4
-        for k in range(1, steps):
-            fx = x0 + (x1 - x0) * k / steps
-            fy = y0 + (y1 - y0) * k / steps
-            cx, cy = int(math.floor(fx + 0.5)), int(math.floor(fy + 0.5))
-            if (cx, cy) == (x0, y0) or (cx, cy) == (x1, y1):
-                continue
-            if bit[cy * b.w + cx] & stop:
-                return False
-        return True
+        return self.b.los(x0, y0, x1, y1, w.wall | w.brk | w.objs)

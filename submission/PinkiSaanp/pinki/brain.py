@@ -6,6 +6,7 @@ from time import perf_counter
 
 from .board import DX, DY, INF, KEYS, popcount
 from .planner import Plan, Planner
+from .shape import analyse, bfs_path, central_cell
 from .tactics import Tactics
 from .world import World
 
@@ -29,6 +30,19 @@ class Brain:
         self.fails = 0
         self.avoid = {}              # cell -> until_t (contested tiles)
         self.alert = -100            # last tick an enemy head was close
+        self.shape = None
+        self.shape_t = -100
+        self.reloc_t = -100          # last relocation to the heavy blob
+        v = self.variant
+        self.opt_heavy = v.get('heavy', 0)
+        self.reloc_min = v.get('reloc_min', 300)
+        self.reloc_frac = v.get('reloc_frac', 0.3)
+        self.heavy_bonus = v.get('heavy_bonus', 2.5)
+        self.opt_linedef = v.get('linedef', 0)
+        self.trace = v.get('trace')
+        self.endgame = v.get('endgame', 0)
+        self.centre = None
+        self.centre_t = -100
         self.log = log
         self.stats = {'plans': 0, 'bombs': 0, 'bullets': 0, 'walls': 0, 'dash': 0, 'retreat': 0,
                       'attack': 0, 'evade': 0, 'wallkill': 0, 'bombkill': 0, 'block': 0}
@@ -59,6 +73,10 @@ class Brain:
             self._log('slow t=%d update=%.1fms decide=%.1fms action=%s state=%s plan=%r' % (
                 w.t, 1000 * (t1 - t0), 1000 * (t2 - t1), action, self.state, self.plan))
         action = self.sanitize(action)
+        if self.trace and self.trace[0] <= w.t <= self.trace[1]:
+            self._log('T t=%d pos=(%d,%d) act=%s area=%d c=[d%d b%d g%d w%d] lost=%d\n  %s' % (
+                w.t, w.x, w.y, action, popcount(w.mine), w.dash.c, w.bomb.c, w.gun.c, w.build.c, w.lost_track,
+                                                                '\n  '.join(rows)))
         try:
             w.note_action(action)
         except Exception:
@@ -100,8 +118,8 @@ class Brain:
         self.avoid = {c: u for c, u in self.avoid.items() if u > w.t}
         self._advance_plan()
 
-        planner = Planner(w, deadline, extra_block=b.mask(self.avoid), rng=self.rng)
-        tac = Tactics(w, planner)
+        planner = Planner(w, deadline, extra_block=b.mask(self.avoid), rng=self.rng, opts=self.variant)
+        tac = Tactics(w, planner, avoid=b.mask(self.avoid))
         discount = self.plan.capture if self.plan else 0
 
         # ---- 1. dodge enemy bombs that would cut our head off ----------------
@@ -116,6 +134,13 @@ class Brain:
         if act:
             self.stats['block'] += 1
             return act
+        # ---- 1c. stand where a visible shooter's line cannot cut off our bulk --
+        if self.opt_linedef and in_home:
+            act = tac.dodge_lines(self._preview())
+            if act:
+                self.plan = None
+                self.stats['dodge'] = self.stats.get('dodge', 0) + 1
+                return act
         # ---- 2. instant kill: wall the last own tile behind an enemy head ----
         act = tac.wall_kill()
         if act:
@@ -182,6 +207,18 @@ class Brain:
                 self.stats['bullets'] += 1
                 return 'G' + KEYS[g[1]]
 
+        # ---- endgame: park the head where a cut leaves us the most --------------
+        if self.endgame and w.t >= self.endgame and in_home and area >= 300:
+            act = self._endgame_hold(tac)
+            if act is not None:
+                return act
+
+        # ---- keep the head on the heavy side of our necks -----------------------
+        if self.opt_heavy and in_home:
+            act = self._relocate(planner)
+            if act is not None:
+                return act
+
         # ---- attack an exposed enemy trail in view ------------------------------
         atk = self._attack(planner)
         if atk is not None:
@@ -198,6 +235,71 @@ class Brain:
             self.stats['plans'] += 1
         if self.plan is None:
             return self._hold(tac)
+        return self._step()
+
+    def _shape(self):
+        w = self.w
+        if self.shape is None or w.t - self.shape_t >= 4:
+            self.shape = analyse(w.b, w.mine, w.b.bit[w.head])
+            self.shape_t = w.t
+        return self.shape
+
+    def _heavy_region(self):
+        sh = self.shape
+        if sh is None or sh.heavy is None or self.w.t - self.shape_t > 12:
+            return 0
+        mass, region, _ = sh.blobs[sh.heavy]
+        return region if mass >= 0.4 * sh.area else 0
+
+    def _relocate(self, planner):
+        """Walk into the heaviest blob when a single neck cut would cost us most of our land."""
+        w = self.w
+        b = w.b
+        p = self.plan
+        if p is not None and (p.kind == 'reloc' or (p.kind == 'loop' and self.pi > 0)):
+            return None
+        sh = self._shape()
+        risk = sh.at_risk()
+        if risk < max(self.reloc_min, self.reloc_frac * sh.area):
+            return None
+        core = sh.blobs[sh.heavy][2]
+        safe = w.mine & ~(w.wall | w.brk | w.objs | planner.block)
+        path = bfs_path(b, w.head, core, safe)
+        if path is None:
+            path = bfs_path(b, w.head, core, safe | planner.passable)
+        if not path:
+            return None
+        self.plan = Plan(path, risk, len(path), 0, kind='reloc')
+        self.pi = 0
+        self.reloc_t = w.t
+        self.stats['reloc'] = self.stats.get('reloc', 0) + 1
+        return self._step()
+
+    def _endgame_hold(self, tac):
+        w = self.w
+        b = w.b
+        bit = b.bit
+        p = self.plan
+        if p is not None and p.kind == 'loop' and self.pi > 0:
+            return None
+        c = self.centre
+        if c is None or w.t - self.centre_t >= 30 or not bit[c] & w.mine:
+            c = central_cell(b, w.mine, c if c is not None else w.head)
+            self.centre, self.centre_t = c, w.t
+        if c is None:
+            return None
+        if c == w.head or (abs(c % b.w - w.x) + abs(c // b.w - w.y) <= 1 and bit[w.head] & w.mine):
+            self.plan = None
+            return self._hold(tac)
+        if p is not None and p.kind == 'centre' and p.cells and p.cells[-1] == c:
+            return self._step()
+        safe = w.mine & ~(w.wall | w.brk | w.objs)
+        path = bfs_path(b, w.head, bit[c], safe | bit[c])
+        if not path:
+            return None
+        self.plan = Plan(path, 0, len(path), 0, kind='centre')
+        self.pi = 0
+        self.stats['centre'] = self.stats.get('centre', 0) + 1
         return self._step()
 
     def _hold(self, tac):
@@ -219,11 +321,13 @@ class Brain:
 
         best = (key(h), 'I')
         for d, n in enumerate(b.nbr[h]):
-            if n < 0 or bit[n] & tac.block or not (bit[n] & w.mine):
+            if n < 0 or bit[n] & tac.move_block or not (bit[n] & w.mine):
                 continue
             k = key(n)
             if k > best[0]:
                 best = (k, KEYS[d])
+        if best[1] == 'I' and self.fails >= 2:
+            return self.safe_move()
         return best[1]
 
     # ------------------------------------------------------------------
@@ -340,12 +444,15 @@ class Brain:
         cells = b.cells(boundary)
         if len(cells) > 300:
             cells = cells[::len(cells) // 300 + 1]
+        heavy = b.dilate(self._heavy_region()) if self.opt_heavy else 0
         for c in cells:
             dd = dist[c]
             if dd >= INF or dd == 0:
                 continue
             region = b.disk(c, 49) & claim
             score = popcount(region) / (dd + 12.0)
+            if bit[c] & heavy:
+                score *= self.heavy_bonus
             if best is None or score > best[0]:
                 best = (score, c)
         if best is None:
@@ -470,13 +577,18 @@ class Brain:
         b = w.b
         bit = b.bit
         best = None
+        avoid = self.avoid
         for d, nb in enumerate(b.nbr[w.head]):
-            if nb < 0 or bit[nb] & (w.wall | w.brk | w.objs):
+            if nb < 0 or bit[nb] & (w.wall | w.brk | w.objs) or nb in avoid:
                 continue
             score = (1 if bit[nb] & w.mine else 0, -d)
             if best is None or score > best[0]:
                 best = (score, d)
         if best is None:
+            # Boxed in (or every exit contested): break out through a breakable wall.
+            for d, nb in enumerate(b.nbr[w.head]):
+                if nb >= 0 and bit[nb] & w.brk:
+                    return 'X' + KEYS[d]
             return 'I'
         return KEYS[best[1]]
 

@@ -86,11 +86,16 @@ class World:
         self.fbullet_dirs = {}          # cell -> heading when inferable
         self.objs = 0                   # bombs / bullets / heads in the latest view
         self.vis = 0
+        self.seen_ever = 0
         self.dash = Ability(2, 1, 5, 20)
         self.bomb = Ability(1, 0, 15, 15)
         self.gun = Ability(3, 0, 2, 20)
         self.build = Ability(30, 5, 0, 5)
         self.last_action = None
+        self.no_build = {}              # cell -> tick until which building there is pointless
+        self.build_fail_t = -100
+        self.debug_build = None
+        self.prev_rows = None
         self.moved = True
         self.my_bullets = []            # [path cells, fired_t]
         self.my_bombs = []              # [centre, fired_t]
@@ -122,6 +127,7 @@ class World:
             for ab in (self.dash, self.bomb, self.gun, self.build):
                 ab.tick()
         self._observe(rows)
+        self.prev_rows = rows
         self._predict_effects()
         self._enforce_connectivity()
         self.area_hist.append(popcount(self.mine))
@@ -240,8 +246,17 @@ class World:
         elif k == 'C':
             i, j = (int(v) for v in action[1:].split())
             ch = rows[5 + j][5 + i] if 0 <= 5 + j < 11 and 0 <= 5 + i < 11 else '?'
-            if ch != '*':
+            # A wall that cuts enemy land off can be swallowed by the fill at once:
+            # our own paint on the target still means the charge was spent.
+            if ch != '*' and ch != self.paint:
+                if self.debug_build is not None:
+                    self.debug_build.append((self.t, action, ch, self.build.c, list(rows), self.prev_rows))
                 self.build.refund()
+                # Usually a head stepping onto the same tile: retrying just deadlocks both.
+                self.no_build[self.b.idx(self.x + i, self.y + j)] = self.t + 6
+                if self.t - self.build_fail_t <= 3:
+                    self.build.c = 0      # charge belief has drifted: resync from zero
+                self.build_fail_t = self.t
         elif k == 'J':
             if not self.moved:
                 self.dash.c = 0
@@ -312,6 +327,7 @@ class World:
         self.foreign_bombs = bombs
         self._track_bullets(bullets)
         self.vis = vis
+        self.seen_ever |= vis
         self.mine = (self.mine & ~vis) | mine_v
         for k in self.enemy:
             self.enemy[k] = (self.enemy[k] & ~vis) | en_v[k]

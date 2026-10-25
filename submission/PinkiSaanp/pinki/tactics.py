@@ -15,13 +15,14 @@ ENEMY_BOMBS = None
 
 
 class Tactics:
-    def __init__(self, world, planner):
+    def __init__(self, world, planner, avoid=0):
         self.w = world
         self.b = world.b
         self.p = planner
         w = world
         b = self.b
         self.block = w.wall | w.brk | w.objs
+        self.move_block = self.block | avoid     # also tiles where our moves keep failing
         self.heads = {}
         for lab, (cell, ts) in w.heads.items():
             if ts == w.t:
@@ -34,19 +35,7 @@ class Tactics:
 
     def los(self, x0, y0, x1, y1):
         """Build line of sight: no object on tiles crossed between tile centres."""
-        b = self.b
-        bit = b.bit
-        stop = self.block
-        n = max(abs(x1 - x0), abs(y1 - y0)) * 8
-        for k in range(1, n):
-            fx = x0 + (x1 - x0) * k / n
-            fy = y0 + (y1 - y0) * k / n
-            for cx, cy in ((int(fx + 0.5), int(fy + 0.5)),):
-                if (cx, cy) == (x0, y0) or (cx, cy) == (x1, y1):
-                    continue
-                if bit[cy * b.w + cx] & stop:
-                    return False
-        return True
+        return self.b.los(x0, y0, x1, y1, self.block)
 
     def can_build(self, cell):
         w = self.w
@@ -55,7 +44,7 @@ class Tactics:
         i, j = x - w.x, y - w.y
         if not (0 < i * i + j * j <= 16):
             return None
-        if b.bit[cell] & self.block:
+        if b.bit[cell] & self.block or w.no_build.get(cell, -1) >= w.t:
             return None
         if not self.los(w.x, w.y, x, y):
             return None
@@ -167,6 +156,87 @@ class Tactics:
         return 'C %d %d' % best[1]
 
     # ------------------------------------------------------------------
+    def kept_after(self, head_cell, area, removed, cap=80):
+        """Size of our part still attached to head_cell once `removed` is gone (capped flood)."""
+        b = self.b
+        s = b.stride
+        A = area & ~removed
+        cur = b.dilate(b.bit[head_cell]) & A
+        for _ in range(cap):
+            nxt = (cur | (cur << 1) | (cur >> 1) | (cur << s) | (cur >> s)) & A
+            if nxt == cur:
+                return popcount(cur)
+            cur = nxt
+        return popcount(A)     # still growing after cap steps: treat as the big side
+
+    def enemy_rays(self):
+        """Bullet paths visible enemy heads could fire now (weight 1) or after one step (0.5)."""
+        w = self.w
+        b = self.b
+        bit = b.bit
+        out = []
+        for lab, e in self.heads.items():
+            starts = [(e, 1.0)]
+            for n in b.nbr[e]:
+                if n >= 0 and not (bit[n] & self.block):
+                    starts.append((n, 0.5))
+            for s, wt in starts:
+                for d in range(4):
+                    first = b.nbr[s][d]
+                    if first < 0 or bit[first] & self.block:
+                        continue
+                    path = w.ray(s, d)
+                    if path:
+                        out.append((path, b.mask(path), wt))
+        return out
+
+    def dodge_lines(self, preferred):
+        """Step so a bullet from a visible enemy head cannot cut us off from our bulk."""
+        w = self.w
+        b = self.b
+        bit = b.bit
+        M = w.mine
+        if not M or not self.heads:
+            return None
+        h = w.head
+        area = popcount(M)
+        rays = [ray for ray in self.enemy_rays() if ray[1] & M]
+        if not rays:
+            return None
+        options = [('I', h, M)]
+        for d in range(4):
+            n = b.nbr[h][d]
+            if n >= 0 and not (bit[n] & self.move_block):
+                options.append((KEYS[d], n, M | bit[h]))
+
+        def risk(cell, A):
+            worst = 0.0
+            for path, r, wt in rays:
+                if bit[cell] & r:     # our head stops the bullet: only the stretch before us paints
+                    r = b.mask(path[:path.index(cell)])
+                    if not r & A:
+                        continue
+                loss = (popcount(A) - self.kept_after(cell, A, r)) * wt
+                if loss > worst:
+                    worst = loss
+            return worst
+
+        cur = next((o for o in options if o[0] == preferred), options[0])
+        base = risk(cur[1], cur[2])
+        if base < max(120, 0.15 * area):
+            return None
+        best = (base, cur[0])
+        for act, cell, A in options:
+            if act == cur[0]:
+                continue
+            r = risk(cell, A)
+            if r < best[0] - 1:
+                best = (r, act)
+        if best[1] == cur[0] or base - best[0] < max(80, 0.1 * area):
+            return None
+        return best[1]
+
+    # ------------------------------------------------------------------
     def enemy_bombs(self):
         """Visible enemy bombs as (cell, first_seen_t)."""
         return [(c, t0) for c, t0 in self.w.foreign_bombs.items()]
@@ -198,7 +268,7 @@ class Tactics:
         options = [('I', w.head, area)]
         for d in range(4):
             n = b.nbr[w.head][d]
-            if n >= 0 and not (b.bit[n] & self.block):
+            if n >= 0 and not (b.bit[n] & self.move_block):
                 options.append((KEYS[d], n, area | b.bit[w.head]))
             if w.dash.ready(w.t):
                 c = w.head
@@ -259,7 +329,7 @@ class Tactics:
         dist = b.distance_field(target, passable, limit=60)
         best = None
         for d, n in enumerate(b.nbr[w.head]):
-            if n < 0 or bit[n] & self.block:
+            if n < 0 or bit[n] & self.move_block:
                 continue
             dd = dist[n]
             if dd >= INF:

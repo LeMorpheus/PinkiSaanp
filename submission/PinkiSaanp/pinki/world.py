@@ -152,17 +152,18 @@ class World:
                 self.enemy[LABELS[j]] = 0
 
     # ------------------------------------------------------------------
-    def _mismatch(self, rows, x, y, limit):
-        """Disagreement between a frame and the map if our head were at (x, y).
+    def _evidence(self, rows, x, y, hard_limit):
+        """(hard, soft) disagreement between a frame and the map if our head were at (x, y).
 
-        Static walls / off-map cells are hard evidence (2 each); tiles seen on the
-        previous frame that should not have changed are soft evidence (0.25).
+        Hard: static walls / off-map cells that do not match (they never change).
+        Soft: tiles seen on the previous frame that changed.  Soft evidence only ranks
+        candidates: our own bomb blasts and fills legitimately change dozens of tiles.
         """
         sw = self.static_wall
         mem = self.mem
         seen = self.seen
         prev = self.t - 1
-        bad = 0.0
+        hard = soft = 0
         for r in range(11):
             wy = y + r - 5
             row = rows[r]
@@ -174,19 +175,19 @@ class World:
                 wx = x + c - 5
                 if not inside_y or wx < 0 or wx >= N:
                     if ch != '~':
-                        bad += 2
+                        hard += 1
                     continue
                 i = wy * N + wx
                 if sw[i]:
                     if ch != '#':
-                        bad += 2
+                        hard += 1
                 elif ch == '#' or ch == '~':
-                    bad += 2
+                    hard += 1
                 elif seen[i] == prev and ch in STABLE and mem[i] != ord(ch):
-                    bad += 0.25
-            if bad > limit:
-                return bad
-        return bad
+                    soft += 1
+            if hard > hard_limit:
+                return hard, soft
+        return hard, soft
 
     def _localize(self, rows, action):
         d = None
@@ -205,23 +206,30 @@ class World:
         for (x, y, prior) in cands:
             if not (0 <= x < N and 0 <= y < N):
                 continue
-            score = self._mismatch(rows, x, y, 1e9) + prior
+            hard, soft = self._evidence(rows, x, y, 1 << 30)
+            score = 2 * hard + 0.25 * soft + prior
             # Moving leaves our paint behind us; idling does not.
             if d is not None and (x, y) != (self.x, self.y):
                 bx, by = 5 - DX[d], 5 - DY[d]
                 if rows[by][bx] == self.paint:
                     score -= 0.5
             if best is None or score < best[0]:
-                best = (score, x, y)
-        if best[0] > 6:
-            # Lost: search the neighbourhood for the best static-wall match.
-            for dy in range(-4, 5):
-                for dx in range(-4, 5):
+                best = (score, x, y, hard)
+        if best[3] > 0:
+            # Static walls contradict every expected position: we are lost.  Search
+            # nearby for the position the walls agree with best.
+            top = None
+            for dy in range(-7, 8):
+                for dx in range(-7, 8):
                     x, y = self.x + dx, self.y + dy
-                    if 0 <= x < N and 0 <= y < N:
-                        s = self._mismatch(rows, x, y, best[0]) + 0.05 * (abs(dx) + abs(dy))
-                        if s < best[0]:
-                            best = (s, x, y)
+                    if not (0 <= x < N and 0 <= y < N):
+                        continue
+                    hard, soft = self._evidence(rows, x, y, best[3] if top is None else top[1])
+                    key = (hard, 0.25 * min(soft, 24) + 0.05 * (abs(dx) + abs(dy)))
+                    if top is None or key < (top[1], top[2]):
+                        top = (None, hard, key[1], x, y)
+            if top is not None and top[1] < best[3]:
+                best = (0.0, top[3], top[4], top[1])
             self.lost_track += 1
         self.moved = (best[1], best[2]) != (self.x, self.y)
         self.x, self.y = best[1], best[2]

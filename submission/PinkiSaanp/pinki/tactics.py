@@ -247,6 +247,67 @@ class Tactics:
         return best[1]
 
     # ------------------------------------------------------------------
+    def lane_plug(self, radius=6, min_loss=150, frac=0.15, avoid=0):
+        """Wall off a bullet lane that could cut our land, where it leaves our land.
+
+        Bullets fly along wall-free row/column segments ("lanes", at most 39 long on
+        this map) and are fired from a free cell of the same lane.  A lane whose
+        cells inside our land would split it, and which has open cells outside our
+        land, is plugged with a wall on the outside cell next to our land.
+        """
+        w = self.w
+        b = self.b
+        bit = b.bit
+        M = w.mine
+        if not M:
+            return None
+        n = b.w
+        hx, hy = w.x, w.y
+        stop = w.wall | w.brk
+        area = popcount(M)
+        need = max(min_loss, frac * area)
+        best = None
+        lines = [(0, y) for y in range(max(0, hy - radius), min(n, hy + radius + 1))] + \
+                [(1, x) for x in range(max(0, hx - radius), min(n, hx + radius + 1))]
+        for axis, k in lines:
+            cells = [k * n + i for i in range(n)] if axis == 0 else [i * n + k for i in range(n)]
+            seg = []
+            for c in cells + [-1]:
+                if c >= 0 and not (bit[c] & stop):
+                    seg.append(c)
+                    continue
+                if len(seg) >= 3:
+                    best = self._plug_segment(seg, M, area, need, best, avoid)
+                seg = []
+        if best is None:
+            return None
+        return 'C %d %d' % best[1]
+
+    def _plug_segment(self, seg, M, area, need, best, avoid):
+        b = self.b
+        bit = b.bit
+        inside = [i for i, c in enumerate(seg) if bit[c] & M]
+        if not inside or len(inside) == len(seg):
+            return best
+        lane = b.mask(seg[inside[0]:inside[-1] + 1]) & M
+        loss = area - self.kept_after(self.w.head, M, lane, cap=60)
+        if loss < need or (best is not None and loss <= best[0]):
+            return best
+        # Plug spots: the open lane cells just outside our first and last run.
+        spots = []
+        if inside[0] > 0:
+            spots.append(seg[inside[0] - 1])
+        if inside[-1] < len(seg) - 1:
+            spots.append(seg[inside[-1] + 1])
+        for c in spots:
+            if bit[c] & (M | avoid):
+                continue
+            ij = self.can_build(c)
+            if ij is not None:
+                return (loss, ij)
+        return best
+
+    # ------------------------------------------------------------------
     def enemy_bombs(self):
         """Visible enemy bombs as (cell, first_seen_t)."""
         return [(c, t0) for c, t0 in self.w.foreign_bombs.items()]

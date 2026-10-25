@@ -42,11 +42,13 @@ class Brain:
         self.alert_leg = v.get('alert_leg', 0)
         self.opt_order = v.get('order', 0)
         self.noabil = v.get('noabil', 0)
+        self.opt_plug = v.get('plug', 0)
         self.neck = v.get('neck', 0)               # widest layer treated as a neck (0 = off)
         self.w.book_steals = bool(v.get('book', 0))
         self.w.head_age = v.get('head_age', 1)
         self.neck_t = -100
         self.trace = v.get('trace')
+        self.tracepos = v.get('tracepos', 0)
         self.endgame = v.get('endgame', 0)
         self.centre = None
         self.centre_t = -100
@@ -80,6 +82,8 @@ class Brain:
             self._log('slow t=%d update=%.1fms decide=%.1fms action=%s state=%s plan=%r' % (
                 w.t, 1000 * (t1 - t0), 1000 * (t2 - t1), action, self.state, self.plan))
         action = self.sanitize(action)
+        if self.tracepos:
+            self._log('P %d %d %d %s %d' % (w.t, w.x, w.y, action, w.lost_track))
         if self.trace and self.trace[0] <= w.t <= self.trace[1]:
             self._log('T t=%d pos=(%d,%d) act=%s area=%d c=[d%d b%d g%d w%d] lost=%d\n  %s' % (
                 w.t, w.x, w.y, action, popcount(w.mine), w.dash.c, w.bomb.c, w.gun.c, w.build.c, w.lost_track,
@@ -228,6 +232,15 @@ class Brain:
                 self.bullet_block = (b.nbr[h][g[1]], w.t + 2)
                 self.stats['bullets'] += 1
                 return 'G' + KEYS[g[1]]
+
+        # ---- wall off bullet lanes that could slice our land ---------------------
+        if self.opt_plug and in_home and w.t % 3 == 0 and w.build.c >= 5 and w.build.ready(w.t) \
+                and perf_counter() < deadline:
+            avoid = b.mask(self.plan.cells[self.pi:]) if self.plan is not None else 0
+            act = tac.lane_plug(avoid=avoid)
+            if act:
+                self._count('plug')
+                return act
 
         # ---- endgame: park the head where a cut leaves us the most --------------
         if self.endgame and w.t >= self.endgame and in_home and area >= 300:

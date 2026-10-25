@@ -6,11 +6,10 @@ from time import perf_counter
 
 from .board import DX, DY, INF, KEYS, popcount
 from .planner import Plan, Planner
-from .shape import analyse, bfs_path, central_cell, neck_cut, path_down_layers
 from .tactics import Tactics
 from .world import World
 
-BUDGET = 0.032          # seconds of planning per move (judge limit is 100 ms; keep worst case < 50)
+BUDGET = 0.028          # seconds of planning per move (judge limit is 100 ms; keep worst case < 50)
 EXPAND, RETREAT, ATTACK, ROAM = 'EXPAND', 'RETREAT', 'ATTACK', 'ROAM'
 
 
@@ -30,47 +29,28 @@ class Brain:
         self.fails = 0
         self.avoid = {}              # cell -> until_t (contested tiles)
         self.alert = -100            # last tick an enemy head was close
-        self.shape = None
-        self.shape_t = -100
-        self.reloc_t = -100          # last relocation to the heavy blob
         v = self.variant
-        self.opt_heavy = v.get('heavy', 0)
-        self.reloc_min = v.get('reloc_min', 300)
-        self.reloc_frac = v.get('reloc_frac', 0.3)
-        self.heavy_bonus = v.get('heavy_bonus', 2.5)
-        self.opt_linedef = v.get('linedef', 0)
-        self.alert_leg = v.get('alert_leg', 0)
-        self.opt_order = v.get('order', 0)
-        self.noabil = v.get('noabil', 0)
-        self.opt_plug = v.get('plug', 0)
-        self.opt_bombdodge = v.get('bombdodge', 0)
-        self.opt_snipe = v.get('snipe', 0)
         self.frontier_skipped = False
-        self.centre_bias = v.get('centre_bias', 0)
         self.atk_min = v.get('atk_min', 6)         # smallest credible steal worth walking for
         self.atk_score = v.get('atk_score', 3.0)
-        self.neck = v.get('neck', 0)               # widest layer treated as a neck (0 = off)
-        self.w.book_steals = bool(v.get('book', 0))
-        self.w.head_age = v.get('head_age', 1)
-        self.neck_t = -100
-        self.trace = v.get('trace')
-        self.tracepos = v.get('tracepos', 0)
-        self.endgame = v.get('endgame', 0)
-        self.centre = None
-        self.centre_t = -100
+        self.trace = v.get('trace')                # debug: [t0, t1] dump views
+        self.tracepos = v.get('tracepos', 0)       # debug: log position every tick
         self.log = log
         self.stats = {'plans': 0, 'bombs': 0, 'bullets': 0, 'walls': 0, 'dash': 0, 'retreat': 0,
                       'attack': 0, 'evade': 0, 'wallkill': 0, 'bombkill': 0, 'block': 0}
 
     # ------------------------------------------------------------------
-    def prime(self, rows, action):
-        """Ingest frame 0 after `action` was already sent for it (see bot.py)."""
-        self.w.update(rows, None)
-        self.w.note_action(action)
-        self.last_action = action
+    def replay(self, frames, actions):
+        """Catch up on frames already answered by the scripted opening (see bot.py)."""
+        w = self.w
+        for k, rows in enumerate(frames):
+            w.update(rows, actions[k - 1] if k else None)
+            w.note_action(actions[k])
+        self.last_action = actions[len(frames) - 1]
 
-    def act(self, rows):
-        t0 = perf_counter()
+    def act(self, rows, clock_start=None):
+        """One move.  clock_start: when this move's time limit started, if earlier than now."""
+        t0 = perf_counter() if clock_start is None else clock_start
         w = self.w
         try:
             w.update(rows, self.last_action)
@@ -144,9 +124,6 @@ class Brain:
         tac = Tactics(w, planner, avoid=b.mask(self.avoid))
         discount = self.plan.capture if self.plan else 0
 
-        if self.noabil:
-            return self._plain(planner, tac)
-
         # ---- 1. dodge enemy bombs that would cut our head off ----------------
         act = tac.evade(self._preview())
         if act:
@@ -154,24 +131,11 @@ class Brain:
             self.state = RETREAT
             self.stats['evade'] += 1
             return act
-        if self.opt_bombdodge and in_home:
-            act = tac.dodge_split(self._preview())
-            if act:
-                self.plan = None
-                self._count('splitdodge')
-                return act
         # ---- 1b. stop an enemy bullet that would slice our land off ----------
         act = tac.block_bullets()
         if act:
             self.stats['block'] += 1
             return act
-        # ---- 1c. stand where a visible shooter's line cannot cut off our bulk --
-        if self.opt_linedef and in_home:
-            act = tac.dodge_lines(self._preview())
-            if act:
-                self.plan = None
-                self.stats['dodge'] = self.stats.get('dodge', 0) + 1
-                return act
         # ---- 2. instant kill: wall the last own tile behind an enemy head ----
         act = tac.wall_kill()
         if act:
@@ -219,13 +183,6 @@ class Brain:
             p.bullet_at = None  # cannot shoot: walk the rest
 
         # ---- abilities: bombs, bullets, wall cuts -----------------------------
-        if self.opt_order and w.build.ready(w.t) and planner.enemy_all & w.vis:
-            # A cut steals now and costs only a cheap build charge: do it before any
-            # expansion bomb or bullet (those stay charged for the next tick).
-            cut = planner.best_wall_cut()
-            if cut and cut[0] >= 6:
-                self.stats['walls'] += 1
-                return 'C %d %d' % (cut[1], cut[2])
         if w.bomb.ready(w.t):
             bb = planner.best_bomb(discount)
             if bb and bb[0] >= 7:
@@ -244,39 +201,6 @@ class Brain:
                 self.bullet_block = (b.nbr[h][g[1]], w.t + 2)
                 self.stats['bullets'] += 1
                 return 'G' + KEYS[g[1]]
-            if self.opt_snipe and planner.enemy_all & w.vis and perf_counter() < deadline:
-                act = self._snipe_step(planner, g[0] if g else 0)
-                if act is not None:
-                    self.plan = None
-                    self._count('snipe')
-                    return act
-
-        # ---- wall off bullet lanes that could slice our land ---------------------
-        if self.opt_plug and in_home and w.t % 3 == 0 and w.build.c >= 5 and w.build.ready(w.t) \
-                and perf_counter() < deadline:
-            avoid = b.mask(self.plan.cells[self.pi:]) if self.plan is not None else 0
-            act = tac.lane_plug(avoid=avoid)
-            if act:
-                self._count('plug')
-                return act
-
-        # ---- endgame: park the head where a cut leaves us the most --------------
-        if self.endgame and w.t >= self.endgame and in_home and area >= 300:
-            act = self._endgame_hold(tac)
-            if act is not None:
-                return act
-
-        # ---- cross necks so a cut there costs the light side, not the bulk ------
-        if self.neck and in_home and w.t - self.neck_t >= 3:
-            act = self._cross_neck()
-            if act is not None:
-                return act
-
-        # ---- keep the head on the heavy side of our necks -----------------------
-        if self.opt_heavy and in_home:
-            act = self._relocate(planner)
-            if act is not None:
-                return act
 
         # ---- attack an exposed enemy trail in view ------------------------------
         atk = self._attack(planner)
@@ -294,132 +218,6 @@ class Brain:
             self.stats['plans'] += 1
         if self.plan is None:
             return self._hold(tac)
-        return self._step()
-
-    def _plain(self, planner, tac):
-        """Opponent model for tests: loops and dashes only, no bombs, bullets or walls."""
-        if self.plan is None:
-            self.plan = self._new_plan(planner)
-            self.pi = 0
-        if self.plan is None:
-            return self._hold(tac)
-        act = self._step()
-        return act if act[0] in 'WASDIJX' else 'I'
-
-    def _snipe_step(self, planner, here):
-        """Step to a neighbour from which a bullet would cut a big credible piece off an enemy."""
-        w = self.w
-        b = w.b
-        bit = b.bit
-        stop = w.wall | w.brk | w.objs
-        best = None
-        for d0, n in enumerate(b.nbr[w.head]):
-            if n < 0 or bit[n] & (stop | planner.block):
-                continue
-            for d in range(4):
-                if d == (d0 + 2) & 3:
-                    continue
-                line = w.ray(n, d)
-                if len(line) < 2:
-                    continue
-                lm = b.mask(line)
-                if not lm & planner.enemy_all:
-                    continue
-                s = planner.steal_by(lm)
-                if best is None or s > best[0]:
-                    best = (s, d0)
-        if best is None or best[0] < max(30, 2 * here):
-            return None
-        return KEYS[best[1]]
-
-    def _shape(self):
-        w = self.w
-        if self.shape is None or w.t - self.shape_t >= 4:
-            self.shape = analyse(w.b, w.mine, w.b.bit[w.head])
-            self.shape_t = w.t
-        return self.shape
-
-    def _heavy_region(self):
-        sh = self.shape
-        if sh is None or sh.heavy is None or self.w.t - self.shape_t > 12:
-            return 0
-        mass, region, _ = sh.blobs[sh.heavy]
-        return region if mass >= 0.4 * sh.area else 0
-
-    def _cross_neck(self):
-        w = self.w
-        b = w.b
-        p = self.plan
-        if p is not None and (p.kind == 'neck' or (p.kind == 'loop' and self.pi > 0)):
-            return None
-        self.neck_t = w.t
-        area = popcount(w.mine)
-        if area < 300:
-            return None
-        cut = neck_cut(b, w.mine, b.bit[w.head], narrow=self.neck)
-        if cut is None:
-            return None
-        excess, depth, layers = cut
-        if excess < max(200, 0.25 * area):
-            return None
-        target = min(len(layers) - 1, depth + 4)
-        path = path_down_layers(b, layers, target, w.head)
-        if not path:
-            return None
-        self.plan = Plan(path, excess, len(path), 0, kind='neck')
-        self.pi = 0
-        self._count('neck')
-        return self._step()
-
-    def _relocate(self, planner):
-        """Walk into the heaviest blob when a single neck cut would cost us most of our land."""
-        w = self.w
-        b = w.b
-        p = self.plan
-        if p is not None and (p.kind == 'reloc' or (p.kind == 'loop' and self.pi > 0)):
-            return None
-        sh = self._shape()
-        risk = sh.at_risk()
-        if risk < max(self.reloc_min, self.reloc_frac * sh.area):
-            return None
-        core = sh.blobs[sh.heavy][2]
-        safe = w.mine & ~(w.wall | w.brk | w.objs | planner.block)
-        path = bfs_path(b, w.head, core, safe)
-        if path is None:
-            path = bfs_path(b, w.head, core, safe | planner.passable)
-        if not path:
-            return None
-        self.plan = Plan(path, risk, len(path), 0, kind='reloc')
-        self.pi = 0
-        self.reloc_t = w.t
-        self.stats['reloc'] = self.stats.get('reloc', 0) + 1
-        return self._step()
-
-    def _endgame_hold(self, tac):
-        w = self.w
-        b = w.b
-        bit = b.bit
-        p = self.plan
-        if p is not None and p.kind == 'loop' and self.pi > 0:
-            return None
-        c = self.centre
-        if c is None or w.t - self.centre_t >= 30 or not bit[c] & w.mine:
-            c = central_cell(b, w.mine, c if c is not None else w.head)
-            self.centre, self.centre_t = c, w.t
-        if c is None:
-            return None
-        if c == w.head or (abs(c % b.w - w.x) + abs(c // b.w - w.y) <= 1 and bit[w.head] & w.mine):
-            self.plan = None
-            return self._hold(tac)
-        if p is not None and p.kind == 'centre' and p.cells and p.cells[-1] == c:
-            return self._step()
-        safe = w.mine & ~(w.wall | w.brk | w.objs)
-        path = bfs_path(b, w.head, bit[c], safe | bit[c])
-        if not path:
-            return None
-        self.plan = Plan(path, 0, len(path), 0, kind='centre')
-        self.pi = 0
-        self.stats['centre'] = self.stats.get('centre', 0) + 1
         return self._step()
 
     def _hold(self, tac):
@@ -534,13 +332,7 @@ class Brain:
     def _new_plan(self, planner):
         w = self.w
         if w.mine and w.t - self.alert < 12:
-            # Enemy just around: no fresh excursions beyond a few cells, hold thick land.
-            if not self.alert_leg:
-                return None
-            plan = planner.plan_loops(max_leg=self.alert_leg)
-            if plan is not None and plan.trail <= 3 * self.alert_leg and plan.rate >= 0.8:
-                return plan
-            return None
+            return None  # enemy just around: no fresh excursions, hold thick land
         risky = self._enemy_near(25, 60)
         area = popcount(w.mine)
         # The bigger we are, the more a cut of our open trail would cost: shrink loops.
@@ -565,42 +357,49 @@ class Brain:
         return plan
 
     def _frontier(self, planner):
-        """Walk (through our land) to the boundary cell with most claimable land nearby."""
+        """Walk (through our land) to the boundary cell with most claimable land nearby.
+
+        Bitboard BFS from the head, scoring boundary cells layer by layer; stops once no
+        farther cell can beat the best (a radius-7 disk holds at most 149 cells).
+        """
         w = self.w
         b = w.b
         bit = b.bit
-        M = w.mine | bit[w.head]
+        hb = bit[w.head]
+        M = w.mine | hb
         passable = planner.passable | w.mine
-        dist = b.distance_field(bit[w.head], passable, limit=90)
         claim = b.full & ~w.mine & ~w.wall
         boundary = M & b.dilate(claim & planner.passable)
+        layers = [hb]
+        seen = cur = hb
         best = None
-        cells = b.cells(boundary)
-        if len(cells) > 300:
-            cells = cells[::len(cells) // 300 + 1]
-        heavy = b.dilate(self._heavy_region()) if self.opt_heavy else 0
-        for c in cells:
-            dd = dist[c]
-            if dd >= INF or dd == 0:
-                continue
-            region = b.disk(c, 49) & claim
-            score = popcount(region) / (dd + 12.0)
-            if bit[c] & heavy:
-                score *= self.heavy_bonus
-            if self.centre_bias and w.t < 800:
-                # Enemies start in the other three corners: land toward the middle is
-                # contested and goes first; our corner's interior can wait.
-                score *= 1.0 + self.centre_bias * (c % b.w + c // b.w) / (b.w + b.h)
-            if best is None or score > best[0]:
-                best = (score, c)
+        for k in range(1, 91):
+            cur = b.dilate(cur) & passable & ~seen
+            if not cur:
+                break
+            seen |= cur
+            layers.append(cur)
+            cand = cur & boundary
+            if cand:
+                cells = b.cells(cand)
+                if len(cells) > 40:
+                    cells = cells[::len(cells) // 40 + 1]
+                for c in cells:
+                    score = popcount(b.disk(c, 49) & claim) / (k + 12.0)
+                    if best is None or score > best[0]:
+                        best = (score, c, k)
+            if best is not None and 149.0 / (k + 13.0) <= best[0]:
+                break
         if best is None:
             return None
-        path = [best[1]]
         c = best[1]
-        while dist[c] > 1:
-            for nb in b.nbr[c]:
-                if nb >= 0 and dist[nb] == dist[c] - 1:
-                    c = nb
+        path = [c]
+        nbr = b.nbr
+        for k in range(best[2] - 1, 0, -1):
+            lay = layers[k]
+            for n in nbr[c]:
+                if n >= 0 and bit[n] & lay:
+                    c = n
                     break
             else:
                 return None

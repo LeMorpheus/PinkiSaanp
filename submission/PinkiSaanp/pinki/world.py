@@ -64,8 +64,7 @@ class Ability:
 
 class World:
     def __init__(self):
-        self.b = b = Board(N, N)
-        bit = b.bit
+        self.b = Board(N, N)
         self.t = 0
         self.label = None
         self.paint = None
@@ -96,10 +95,6 @@ class World:
         self.no_build = {}              # cell -> tick until which building there is pointless
         self.build_fail_t = -100
         self.audit = {}                 # action letter -> count, 'failX' -> failed count
-        self.book_steals = False        # add credible steals beyond the view to our land belief
-        self.head_age = 1               # ticks a sighting still pins an enemy head's side of a cut
-        self.debug_build = None
-        self.prev_rows = None
         self.moved = True
         self.my_bullets = []            # [path cells, fired_t]
         self.my_bombs = []              # [centre, fired_t]
@@ -130,12 +125,8 @@ class World:
             self._verify(rows, action)
             for ab in (self.dash, self.bomb, self.gun, self.build):
                 ab.tick()
-        before = dict(self.enemy) if self.book_steals else None
         self._observe(rows)
-        self.prev_rows = rows
         self._predict_effects()
-        if before is not None:
-            self._resolve_steals(before)
         self._enforce_connectivity()
         self.area_hist.append(popcount(self.mine))
 
@@ -271,8 +262,6 @@ class World:
             # our own paint on the target still means the charge was spent.
             if ch != '*' and ch != self.paint:
                 a['failC'] = a.get('failC', 0) + 1
-                if self.debug_build is not None:
-                    self.debug_build.append((self.t, action, ch, self.build.c, list(rows), self.prev_rows))
                 self.build.refund()
                 # Usually a head stepping onto the same tile: retrying just deadlocks both.
                 self.no_build[self.b.idx(self.x + i, self.y + j)] = self.t + 6
@@ -448,12 +437,9 @@ class World:
             return 0
         known = self.seen_ever | removed
         head = self.heads.get(lab)
-        if head and self.t - head[1] <= self.head_age:
+        if head and self.t - head[1] <= 1:
             hb = b.bit[head[0]]
-            near = b.dilate(hb)
-            for _ in range(min(3, self.t - head[1] - 1)):
-                near = b.dilate(near)          # it may have moved a step or three since
-            kept = b.flood(near & E2, E2)
+            kept = b.flood(b.dilate(hb) & E2, E2)
             if b.ring(kept | hb) & ~known:
                 return 0
             return E2 & ~kept
@@ -472,20 +458,6 @@ class World:
             if comp is not big and not (b.ring(comp) & ~known):
                 out |= comp
         return out
-
-    def _resolve_steals(self, before):
-        """Enemy land we just took a bite of: book the credible cut-off pieces our land touches."""
-        b = self.b
-        for lab, E in self.enemy.items():
-            if not E or not (before.get(lab, 0) & self.mine):
-                continue
-            stolen = self.cut_off(lab, E)
-            if not stolen:
-                continue
-            ours = b.flood(stolen & b.dilate(self.mine), stolen)
-            if ours:
-                self.mine |= ours
-                self.enemy[lab] = E & ~ours
 
     def _enforce_connectivity(self):
         b = self.b

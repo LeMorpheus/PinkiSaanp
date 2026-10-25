@@ -8,10 +8,16 @@ Score = painted tiles at the end. Language: Python 3 (judge image `python:3.12-s
 |---|---|
 | `submission/PinkiSaanp/` | **The contest bot** (`manifest.json`, `bot.py`, `pinki/*.py`). Zip this folder's *contents*. |
 | `PinkiSaanp_submission.zip` | Ready-to-upload archive (manifest.json at zip root). Rebuild after changes. |
-| `baselines/PinkiV1/` | Frozen earlier build (opponent for A/B tests; `variant.json` = seed 7). |
+| `baselines/PinkiV1/` | Original handed-over build (opponent for A/B tests; `variant.json` = seed 7). |
+| `baselines/PinkiV2/` | Build after the wall-build fixes (+2883 tiles vs V1); the reference opponent for later A/Bs. |
+| `baselines/PlainLoop/` | V2 with `noabil` (loops only, no bombs/bullets/walls): a stand-in for simple contest bots. |
+| `Rules/map.txt` | Official contest map. Identical to `pinki/mapdata.py` / `probes/map_abs.txt` plus spawn digits. |
 | `Rules/` | Official contest README + official test kit (`testkit` Linux binary, starter bots, web visualizer). |
 | `tools/replay.py` | **Reverse-engineered `.pbrp` replay decoder**: full board for every tick. |
-| `tools/arena.py`, `tools/*.sh` | Run many testkit games in parallel and aggregate scores (written for WSL paths; adapt `SRC`/`KIT`). |
+| `tools/arena.py` | Parallel testkit games: `--sync --lineup A,B,C,D --games 128 --rotate --seeded`; `--variant NAME=JSON` (copy of the submission with options), `--snap NAME=DIR`, `--src DIR` (snapshot to test). Prints avg/win%/TLE/errors and an A-vs-B head-to-head line. |
+| `tools/opening.py` | Opening benchmark: our bot vs 3 idle bots, mean area at given ticks over seeds (`--noseed` = shipped config). ~5 s per config. |
+| `tools/swings.py`, `losses.py`, `peek.py` | Replay analysis: big one-tick swings, loss mechanism classifier (bomb/bullet/wall/head), windows around a head. |
+| `tools/build_zip.sh` | Rebuild `PinkiSaanp_submission.zip` (asserts manifest at root, no variant.json/pycache). |
 | `probes/` | Scripted probe bots used to learn engine mechanics + `map_abs.txt` (the map, extracted from the binary). |
 | `pinkisaanp/`, `sim/`, `tests/`, `main.py`, `STRATEGY.md` | **Legacy** bot for a different game (MiniAICups paper.io). Template only, not used. |
 
@@ -20,7 +26,9 @@ The README says a submission is a directory with `manifest.json` (`{"run": ["pyt
 ```bash
 cd submission/PinkiSaanp && rm -rf pinki/__pycache__ variant.json && zip -r ../../PinkiSaanp_submission.zip manifest.json bot.py pinki
 ```
-Never ship `variant.json` (it is only for local A/B tests). Logging goes to stderr (allowed, captured by the judge). Turn it off with `PINKI_LOG=0`.
+Never ship `variant.json` (it is only for local A/B tests). Logging goes to stderr (allowed, captured by the judge). Turn it off with `PINKI_LOG=0`. Use `tools/build_zip.sh`.
+
+The manifest runs `python3 -S bot.py`. The judge's clock includes interpreter start and module compilation (no bytecode is shipped) and all four bots start together, so `bot.py` plays a fixed 7-move opening (`OPENING`, the planner's own corner loop; nobody can reach us that early) while importing one module per move, then builds the brain, which replays the missed frames (`Brain.replay`). Cold start with 4 copies: every one of the first 10 moves < 19 ms.
 
 ## Running the official engine (Linux / cloud: no Docker needed)
 ```bash
@@ -58,7 +66,10 @@ These **differ from or extend the README**:
 
    Failed ability = idle; the cost is not deducted except a blocked dash.
 9. Moving into a wall/object = idle. Two bots targeting the same tile both idle, which can deadlock forever (handled by failed-move detection).
-10. **Replay format** (`tools/replay.py`):
+10. **Frames and spawns.** In the replay frame P1 starts top-left, P2 top-right, P3 bottom-left, P4 bottom-right (`Rules/map.txt` is the same, y-flipped). Each player's view is a pure mirror (P2 mirrors x, P3 y, P4 both). So in our own frame the enemy with index k^1 started top-right, k^2 bottom-left, k^3 bottom-right. View bullet chars are `GHKL` = players 1..4 (absolute labels); a flying bullet leaves its owner's paint behind it (used to infer heading).
+11. **Bullet lanes:** wall-free row/column segments are at most 39 cells long (median 13), so a bullet can only cut us along such a lane, fired from a free cell of it.
+12. **Building:** line of sight is blocked by objects on any tile the centre-to-centre segment touches, including both tiles at a corner pass (`board.LOS_TABLE`). Walls on enemy paint work; a wall that cuts enemy land can be swallowed by the resulting fill (target shows our paint, charge spent). A bomb exploding as air (not connected to its thrower) still cuts: the victim's cut-off part becomes air.
+13. **Replay format** (`tools/replay.py`):
     - Header: `PBRP` u8 ver, u8 w, u8 h, u8 ?, u32 ticks, 8 bytes, u16 n, then n×[type,x1,y1,x2,y2] map rectangles (y flipped).
     - Per tick: u32 tick, u16 n, n × 5-byte rect diffs.
     - Type → char `~.#*1234ABCDHJKLUIOPQWER6789!@$%`. Replay labels are absolute (P1 = `1`/`A`).
@@ -66,16 +77,17 @@ These **differ from or extend the README**:
 ## Bot architecture (`submission/PinkiSaanp/pinki/`)
 - `board.py`: bitboards (Python ints, stride 101). Flood fill ~0.1–0.3 ms on 100×100. Includes `holes()`, `distance_field()` and cached disks.
 - `world.py`:
-  - **Localisation**: candidate positions after our action, scored against static walls and the previous frame.
+  - **Localisation**: candidate positions after our action; static-wall mismatches (hard) decide "lost" (then a radius-7 search), tile changes (soft) only rank candidates.
   - Map memory, our area belief (predicts own fills, bullet lines and bomb disks beyond view, then enforces head connectivity), enemy paint masks.
   - Enemy heads and headings, foreign bombs, foreign bullets with headings.
-  - The ability-charge model, with verification of whether our ability actually fired.
+  - The ability-charge model, with verification of whether our ability actually fired (failed builds back off `no_build` and resync the charge).
+  - `cut_off()`: credible enemy pieces cut off by a removal (used by `planner.steal_by`).
 - `planner.py`:
   - Loop candidates: start = head or nearby boundary cell, leg1 a cells, leg2 b cells, return straight then greedy to our area.
-  - Ranked with 2D prefix sums, then the top ~24 are evaluated exactly via `holes()`. Score = gain/cost minus a cut-risk penalty that grows with our area.
+  - Ranked with 2D prefix sums, then up to 100 are evaluated exactly via `holes()` until the planning deadline (minus 6 ms for the frontier walk). Score = gain/cost minus a cut-risk penalty that grows with our area.
   - Bullet-return variant (shoot the last straight leg).
   - Bomb/bullet expansion evaluators, plus `steal_by()` (enemy cells cut off from their head).
-- `tactics.py`: `evade` (enemy bomb blast simulation), `block_bullets` (wall in front of an enemy bullet that would cut us), `wall_kill`, `bomb_kill`, `retreat_step` to thick land, `thin()`.
+- `tactics.py`: `evade` (enemy bomb blast simulation), `block_bullets` (wall in front of / body-block an enemy bullet that would cut us; heading from trailing paint), `wall_kill`, `bomb_kill`, `retreat_step` to thick land, `thin()`. Movement routines respect `move_block` (tiles where our moves keep failing).
 - `brain.py`, in priority order each move:
   1. Evade bombs.
   2. Block bullets.
@@ -89,25 +101,25 @@ These **differ from or extend the README**:
   10. Plan loops (no new loops for 12 moves after an enemy is seen close; smaller loops as area grows; tiny loops after t=1880).
   11. `_hold` (stay inside, away from enemies).
 
-  Also failed-move detection (avoid contested tiles), dash on straight runs, and a 50 ms budget.
+  Also failed-move detection (avoid contested tiles; boxed in -> break a `*`), dash on straight runs, and a 28 ms planning budget. Debug options via `variant.json`: `trace` [t0,t1], `tracepos`, `nodeadline`, `top`, `risk_mult`, `atk_min`/`atk_score`.
 
-## Results so far (official testkit)
-- vs `wall_hug`/`random`: 6870 and 2433 tiles; baselines near 0. Avg ~1–2 ms/move, max 83 ms once (planning spike).
-- 4-way self-play with variants: chaotic. Whole territories change hands (bullets through thin trails; bombs next to heads). The original PinkiSaanp copy scored 0 in two games, while a variant got 6739.
-- The **latest edits are UNTESTED**: `block_bullets`, enemy bullet tracking, area-scaled loop sizes, `RISK_K` 1/40000, endgame caution. Run the arena first; fix any exceptions (they're caught and logged as `decide error` in stderr logs).
+## Results (official testkit, A/B = 128 games, seats rotated, per-game seeds, `tools/arena.py`)
+Head-to-head standard error is ~400 tiles per 128 games: outcomes are near-binary steal chains, so only big effects show.
+
+| Change | Result |
+|---|---|
+| Startup: answer move 1 before imports, fast `Board`/`World` init, `-S`, `gc.freeze` | move 1 86 ms -> 14 ms (cold), no TLE |
+| Wall builds: exact LOS table, *credible* steals (cut piece must be sealed by tiles we have seen), fill-swallowed walls count as built, retry back-off, move/build deadlock breaking | **vs PinkiV1: 4470 vs 1587 avg, 93-35, +2883 +- 393** (V1 wasted ~400 moves/game on failing walls) |
+| Bullet heading from trailing paint, body-blocking, 32 ms planning budget | vs V2 +195 +- 393 |
+| Localisation: only static walls may declare us lost (own bomb blasts used to trip it) | lost ticks 73 -> 1 per game; vs V2 +89 +- 385 |
+| `top=100` exact loop evaluations (until deadline, 6 ms reserved for the frontier walk) | opening +23% area (t=300/450/600: 1355/1880/2390 vs 1000/1374/1946); vs V2 +601 +- 425; vs PlainLoop field 4093 vs 3488 avg |
+| Frontier walk as layered bitboard BFS with early stop; planning budget 28 ms; staged loading | opening t=600/800: 2533/3197 (unseeded); idle-machine worst move ~27 ms (one 60 ms OS spike), cold first moves < 19 ms |
+| **Final build vs PinkiV1 + wall_hug + random (128 games)** | **4854 vs 1620 avg, win 73% vs 20%, h2h 100-28, +3233 +- 400, 0 TLE** |
+
+Tried and dropped (vs V2, +-~400 each): heavy-blob relocation -226, BFS-neck crossing w2 -178 / w5 -4435, perimeter term +282/-304, visible-shooter line dodge +68, endgame centre hold +82, small loops on alert +49, bomb steal-awareness +380/+461 alone but -115 +- 278 on top of top=100 (256 games), lane plugs -150, cut-before-bomb ordering -115, head_age 4 -29, steal booking -88 (slow), risk x4 -147, snipe +117, bomb-split dodge -169, attack thresholds 30 +362 / off -316 (attacks are worth it). Code for these is in git history (commit a095ac3).
 
 ## Highest-value next steps
-1. **Startup timeout risk.** One TLE was seen, probably the first move including Python import + `Board` init (10k big-int bits, neighbour tables). Measure the startup cost and make it lazy/faster (e.g. build `bit` via `1 << pos` on demand, precompute less). The 100 ms limit applies per move. Also keep worst-case moves < ~50 ms (log lines `slow t=`).
-2. **Defence against cuts** (the main way to lose everything):
-   - Keep the head in thick land (≥3 own neighbours) whenever enemies are near.
-   - Shorten exposure (trail length × time) as area grows.
-   - Block enemy bullets with walls.
-   - Consider walling the perimeter facing enemies (walls stop bullets; up to 30 charges, +1 per 5 moves; break our own walls with `X`).
-   - Dodge bombs (`tactics.evade`, single-step lookahead).
-3. **Offence.** Steals transfer whole territories:
-   - Snipe with bullets through enemy land/trails (`best_bullet` includes `steal_by`; it is conservative when the enemy head is unseen).
-   - Wall-kill heads hanging on one own tile.
-   - Bomb heads (aim at a predicted position 2–3 moves ahead; a bomb in their path also blocks them).
-   - Late-game steals are decisive, so prioritise the leader and the endgame.
-4. Validate in A/B matches vs `baselines/PinkiV1` + `wall_hug` + `random` (rotate seats); compare average tiles and win%.
-5. Keep `PINKI_LOG` stderr light (the judge captures it; it's fine but don't spam).
+1. Losses are dominated by bullets and bombs cutting necks out of view (77% of cutters are >10 cells from our head); the head is usually on the light side of a cut. No structural defence tried so far beat the noise.
+2. Expansion speed is the most reliable lever (deterministic, transfers to any field): `tools/opening.py` measures it in seconds. Better loop pre-ranking or cheaper exact evaluation should pay off.
+3. Our land belief drifts (steals out of view are not booked; robberies out of view are not seen). Booking credible steals was too slow as implemented.
+4. Keep `PINKI_LOG` stderr light (the judge captures it; it's fine but don't spam).

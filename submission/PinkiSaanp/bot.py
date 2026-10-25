@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """PinkiSaanp - Codewars Agent Showdown bot. Reads 11x11 views, answers one command per line.
 
-The judge's clock for move 1 includes interpreter startup, so move 1 is answered
-before the bot modules are imported (frame 0 is identical in every game); the
-import + setup cost then lands on move 2 instead of stacking up.
+The judge's clock includes interpreter startup and module compilation (no
+bytecode is shipped), and all four bots start at once.  So the first moves
+follow a fixed opening (nobody can reach us that early; the map and spawn are
+identical for everyone) while the bot is loaded one module per move; the
+brain then replays the frames it missed and takes over.
 """
 
 import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-FIRST_MOVE = 'W'
+# Start of the corner loop the planner itself opens with: (3,3) -> (1,3) -> (1,9) -> (4,9).
+OPENING = ('A', 'A', 'JS', 'S', 'S', 'S', 'D', 'D', 'D')
+SETUP = ('pinki.board', 'pinki.mapdata', 'pinki.world', 'pinki.planner', 'pinki.tactics', 'pinki.brain')
 
 
 def load_variant():
@@ -45,29 +49,61 @@ def send(out, action):
 def main():
     stdin = sys.stdin
     out = sys.stdout
-    first = read_frame(stdin)
-    if first is None or not send(out, FIRST_MOVE):
-        return
-    sys.path.insert(0, HERE)
+    frames = []
+    brain = None
+    sent = None
+    while brain is None:
+        rows = read_frame(stdin)
+        if rows is None:
+            return
+        if len(frames) >= len(OPENING):
+            break                       # setup somehow not done: fall through and load now
+        if not send(out, OPENING[len(frames)]):
+            return
+        frames.append(rows)
+        if len(frames) == 1:
+            sys.path.insert(0, HERE)
+            from time import perf_counter
+        sent = perf_counter()           # the next move's clock is already running
+        k = len(frames) - 1
+        if k < len(SETUP):
+            __import__(SETUP[k])        # one module compile per move
+        else:
+            brain = build(frames)
+            rows = None
+    if brain is None:
+        brain = build(frames)
+    if rows is not None:
+        act(brain, rows, sent, out)
+        sent = None
+    while True:
+        rows = read_frame(stdin)
+        if rows is None:
+            return
+        if not act(brain, rows, sent, out):
+            return
+        sent = None
+
+
+def build(frames):
     from pinki.brain import Brain
     brain = Brain(log=os.environ.get('PINKI_LOG', '1') == '1', variant=load_variant())
     try:
-        brain.prime(first, FIRST_MOVE)
+        brain.replay(frames, OPENING)
     except Exception:
         pass
     import gc
     gc.collect()
     gc.freeze()     # the big static tables never need rescanning
-    while True:
-        rows = read_frame(stdin)
-        if rows is None:
-            return
-        try:
-            action = brain.act(rows)
-        except Exception:
-            action = 'I'
-        if not send(out, action):
-            return
+    return brain
+
+
+def act(brain, rows, sent, out):
+    try:
+        action = brain.act(rows, sent)
+    except Exception:
+        action = 'I'
+    return send(out, action)
 
 
 if __name__ == '__main__':

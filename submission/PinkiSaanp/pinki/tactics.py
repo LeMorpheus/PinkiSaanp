@@ -130,8 +130,9 @@ class Tactics:
         w = self.w
         b = self.b
         M = w.mine
-        if not M or not w.fbullet_dirs or not w.build.ready(w.t):
+        if not M or not w.fbullet_dirs:
             return None
+        can_wall = w.build.ready(w.t)
         hb = b.bit[w.head]
         total = popcount(M)
         best = None
@@ -145,15 +146,24 @@ class Tactics:
             loss = total - popcount(kept)
             if loss < 25:
                 continue
-            for k in range(first - 1, 0, -1):
+            placed = False
+            for k in range(first - 1, 0, -1) if can_wall else ():
                 ij = self.can_build(path[k])
                 if ij is not None:
                     if best is None or loss > best[0]:
-                        best = (loss, ij)
+                        best = (loss, 'C %d %d' % ij)
+                    placed = True
                     break
+            if not placed:
+                # Body-block: a head on the bullet's next tiles breaks it.
+                for d, n in enumerate(b.nbr[w.head]):
+                    if n >= 0 and n in path[:3] and not (b.bit[n] & self.move_block):
+                        if best is None or loss > best[0]:
+                            best = (loss, KEYS[d])
+                        break
         if best is None:
             return None
-        return 'C %d %d' % best[1]
+        return best[1]
 
     # ------------------------------------------------------------------
     def kept_after(self, head_cell, area, removed, cap=80):

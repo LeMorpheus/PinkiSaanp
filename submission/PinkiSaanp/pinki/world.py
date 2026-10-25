@@ -19,6 +19,7 @@ LABELS = '1234'
 PAINTS = 'ABCD'
 BOMBS = '!@$%'
 BULLET_CHARS = set('GHJKL')
+BULLET_OWNER = {'G': 0, 'H': 1, 'K': 2, 'L': 3}     # view char -> player index
 FREE_CHARS = set('.ABCD')
 STABLE = set('.ABCD*')
 N = 100
@@ -94,6 +95,9 @@ class World:
         self.last_action = None
         self.no_build = {}              # cell -> tick until which building there is pointless
         self.build_fail_t = -100
+        self.audit = {}                 # action letter -> count, 'failX' -> failed count
+        self.book_steals = False        # add credible steals beyond the view to our land belief
+        self.head_age = 1               # ticks a sighting still pins an enemy head's side of a cut
         self.debug_build = None
         self.prev_rows = None
         self.moved = True
@@ -126,9 +130,12 @@ class World:
             self._verify(rows, action)
             for ab in (self.dash, self.bomb, self.gun, self.build):
                 ab.tick()
+        before = dict(self.enemy) if self.book_steals else None
         self._observe(rows)
         self.prev_rows = rows
         self._predict_effects()
+        if before is not None:
+            self._resolve_steals(before)
         self._enforce_connectivity()
         self.area_hist.append(popcount(self.mine))
 
@@ -224,6 +231,10 @@ class World:
         if not action:
             return
         k = action[0]
+        a = self.audit
+        a[k] = a.get(k, 0) + 1
+        if k in 'WASDJ' and not self.moved:
+            a['fail' + k] = a.get('fail' + k, 0) + 1
         if k == 'G':
             d = KEYS.index(action[1])
             ch = rows[5 + DY[d]][5 + DX[d]]
@@ -231,6 +242,7 @@ class World:
                 if self.bullet_ch is None:
                     self.bullet_ch = ch
             else:
+                a['failG'] = a.get('failG', 0) + 1
                 self.gun.refund()
                 self.gun.c = 0
                 if self.my_bullets and self.my_bullets[-1][1] == self.t - 1:
@@ -239,6 +251,7 @@ class World:
             i, j = (int(v) for v in action[1:].split())
             ch = rows[5 + j][5 + i] if 0 <= 5 + j < 11 and 0 <= 5 + i < 11 else '?'
             if ch != self.bomb_ch:
+                a['failB'] = a.get('failB', 0) + 1
                 self.bomb.refund()
                 self.bomb.c = 0
                 if self.my_bombs and self.my_bombs[-1][1] == self.t - 1:
@@ -249,6 +262,7 @@ class World:
             # A wall that cuts enemy land off can be swallowed by the fill at once:
             # our own paint on the target still means the charge was spent.
             if ch != '*' and ch != self.paint:
+                a['failC'] = a.get('failC', 0) + 1
                 if self.debug_build is not None:
                     self.debug_build.append((self.t, action, ch, self.build.c, list(rows), self.prev_rows))
                 self.build.refund()
@@ -359,6 +373,19 @@ class World:
                         for d, nb in enumerate(b.nbr[hc]):
                             if nb == c:
                                 found = d
+            if found is None and ch in BULLET_OWNER:
+                # A flying bullet paints its owner's colour behind it: owner paint on
+                # exactly one side (and not ahead) gives the heading.
+                paint = ord(PAINTS[BULLET_OWNER[ch]])
+                mem = self.mem
+                cands = []
+                for d in range(4):
+                    back = b.nbr[c][(d + 2) & 3]
+                    ahead = b.nbr[c][d]
+                    if back >= 0 and mem[back] == paint and (ahead < 0 or mem[ahead] != paint):
+                        cands.append(d)
+                if len(cands) == 1:
+                    found = cands[0]
             if found is not None:
                 dirs[c] = found
         self.fbullets = bullets
@@ -400,6 +427,57 @@ class World:
             self.brk &= ~filled
             for k in self.enemy:
                 self.enemy[k] &= ~filled
+
+    def cut_off(self, lab, E2, removed=0):
+        """Credible part of enemy land E2 that is no longer attached to its owner.
+
+        The owner keeps its head's component (head seen within a tick) or else its
+        largest known piece.  A piece only counts when sealed by tiles we have seen,
+        otherwise it may still connect through land we never saw.
+        """
+        b = self.b
+        if not E2:
+            return 0
+        known = self.seen_ever | removed
+        head = self.heads.get(lab)
+        if head and self.t - head[1] <= self.head_age:
+            hb = b.bit[head[0]]
+            near = b.dilate(hb)
+            for _ in range(min(3, self.t - head[1] - 1)):
+                near = b.dilate(near)          # it may have moved a step or three since
+            kept = b.flood(near & E2, E2)
+            if b.ring(kept | hb) & ~known:
+                return 0
+            return E2 & ~kept
+        comps = []
+        rest = E2
+        while rest and len(comps) < 12:
+            low = rest & -rest
+            comp = b.flood(low, rest)
+            rest &= ~comp
+            comps.append(comp)
+        if rest:
+            comps.append(rest)
+        big = max(comps, key=popcount)
+        out = 0
+        for comp in comps:
+            if comp is not big and not (b.ring(comp) & ~known):
+                out |= comp
+        return out
+
+    def _resolve_steals(self, before):
+        """Enemy land we just took a bite of: book the credible cut-off pieces our land touches."""
+        b = self.b
+        for lab, E in self.enemy.items():
+            if not E or not (before.get(lab, 0) & self.mine):
+                continue
+            stolen = self.cut_off(lab, E)
+            if not stolen:
+                continue
+            ours = b.flood(stolen & b.dilate(self.mine), stolen)
+            if ours:
+                self.mine |= ours
+                self.enemy[lab] = E & ~ours
 
     def _enforce_connectivity(self):
         b = self.b

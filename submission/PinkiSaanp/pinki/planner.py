@@ -467,43 +467,12 @@ class Planner:
 
     # ------------------------------------------------------------------
     def steal_by(self, removed):
-        """Enemy cells cut off from their owner if `removed` stops being theirs.
-
-        Only credible cuts count: the part assumed to stay with the owner (its head's
-        side, or else its largest known piece) must be sealed off by tiles we have
-        actually seen, otherwise it may still connect through land we never saw.
-        """
+        """Enemy cells cut off from their owner if `removed` stops being theirs."""
         w = self.w
-        b = self.b
-        known = w.seen_ever | removed
         total = 0
         for lab, E in w.enemy.items():
-            if not (E & removed):
-                continue
-            E2 = E & ~removed
-            if not E2:
-                continue
-            head = w.heads.get(lab)
-            if head and w.t - head[1] <= 1:
-                hb = b.bit[head[0]]
-                kept = b.flood(b.dilate(hb) & E2, E2)
-                if b.ring(kept | hb) & ~known:
-                    continue
-                total += popcount(E2 & ~kept)
-            else:
-                comps = []
-                rest = E2
-                while rest and len(comps) < 12:
-                    low = rest & -rest
-                    comp = b.flood(low, rest)
-                    rest &= ~comp
-                    comps.append(comp)
-                if rest:
-                    comps.append(rest)
-                big = max(comps, key=popcount)
-                for comp in comps:
-                    if comp is not big and not (b.ring(comp) & ~known):
-                        total += popcount(comp)
+            if E & removed:
+                total += popcount(w.cut_off(lab, E & ~removed, removed))
         return total
 
     def best_wall_cut(self):

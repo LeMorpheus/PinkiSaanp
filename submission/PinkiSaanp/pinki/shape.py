@@ -156,3 +156,55 @@ def central_cell(b, M, start, rounds=6):
                 break
             step = max(1, step // 2)
     return best
+
+
+def neck_cut(b, M, head_bit, narrow=4, max_layers=150, min_far=150):
+    """BFS layers from the head through M are vertex cuts.  Find the narrow layer (<= narrow
+    cells) leaving the most mass beyond it compared with the head's side.
+
+    Returns (excess, depth, layers) or None; layers[k] is the mask at distance k + 1.
+    """
+    layers = []
+    sizes = []
+    seen = cur = head_bit
+    while len(layers) < max_layers:
+        cur = b.dilate(cur) & M & ~seen
+        if not cur:
+            break
+        seen |= cur
+        layers.append(cur)
+        sizes.append(popcount(cur))
+    total = sum(sizes)
+    before = 0
+    best = None
+    for d, n in enumerate(sizes):
+        after = total - before - n
+        if n <= narrow and after >= min_far and after > before + n:
+            excess = after - before - n
+            if best is None or excess > best[0]:
+                best = (excess, d)
+        before += n
+    if best is None:
+        return None
+    return best[0], best[1], layers
+
+
+def path_down_layers(b, layers, target_depth, head):
+    """Walk from a cell of layers[target_depth] back to the head along decreasing depth."""
+    bit = b.bit
+    nbr = b.nbr
+    lay = layers[target_depth]
+    c = b.cells(lay & -lay)[0]
+    path = [c]
+    for k in range(target_depth - 1, -1, -1):
+        for n in nbr[c]:
+            if n >= 0 and bit[n] & layers[k]:
+                c = n
+                break
+        else:
+            return None
+        path.append(c)
+    path.reverse()
+    if head not in nbr[path[0]]:
+        return None
+    return path

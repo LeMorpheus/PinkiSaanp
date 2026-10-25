@@ -6,11 +6,11 @@ from time import perf_counter
 
 from .board import DX, DY, INF, KEYS, popcount
 from .planner import Plan, Planner
-from .shape import analyse, bfs_path, central_cell
+from .shape import analyse, bfs_path, central_cell, neck_cut, path_down_layers
 from .tactics import Tactics
 from .world import World
 
-BUDGET = 0.050          # seconds of thinking per move (judge limit is 100 ms)
+BUDGET = 0.032          # seconds of planning per move (judge limit is 100 ms; keep worst case < 50)
 EXPAND, RETREAT, ATTACK, ROAM = 'EXPAND', 'RETREAT', 'ATTACK', 'ROAM'
 
 
@@ -39,6 +39,12 @@ class Brain:
         self.reloc_frac = v.get('reloc_frac', 0.3)
         self.heavy_bonus = v.get('heavy_bonus', 2.5)
         self.opt_linedef = v.get('linedef', 0)
+        self.alert_leg = v.get('alert_leg', 0)
+        self.opt_order = v.get('order', 0)
+        self.neck = v.get('neck', 0)               # widest layer treated as a neck (0 = off)
+        self.w.book_steals = bool(v.get('book', 0))
+        self.w.head_age = v.get('head_age', 1)
+        self.neck_t = -100
         self.trace = v.get('trace')
         self.endgame = v.get('endgame', 0)
         self.centre = None
@@ -82,11 +88,16 @@ class Brain:
         except Exception:
             pass
         self.last_action = action
+        if self.log and w.t == 1999:
+            self._log('audit %r' % (sorted(w.audit.items()),))
         if self.log and w.t % 100 == 0:
             self._log('t=%d pos=(%d,%d) area=%d state=%s plan=%r c=[d%d b%d g%d w%d] %.1fms %s' % (
                 w.t, w.x, w.y, popcount(w.mine), self.state, self.plan,
                 w.dash.c, w.bomb.c, w.gun.c, w.build.c, 1000 * (perf_counter() - t0), self.stats))
         return action
+
+    def _count(self, key):
+        self.stats[key] = self.stats.get(key, 0) + 1
 
     def _log(self, msg):
         if self.log:
@@ -188,6 +199,13 @@ class Brain:
             p.bullet_at = None  # cannot shoot: walk the rest
 
         # ---- abilities: bombs, bullets, wall cuts -----------------------------
+        if self.opt_order and w.build.ready(w.t) and planner.enemy_all & w.vis:
+            # A cut steals now and costs only a cheap build charge: do it before any
+            # expansion bomb or bullet (those stay charged for the next tick).
+            cut = planner.best_wall_cut()
+            if cut and cut[0] >= 6:
+                self.stats['walls'] += 1
+                return 'C %d %d' % (cut[1], cut[2])
         if w.bomb.ready(w.t):
             bb = planner.best_bomb(discount)
             if bb and bb[0] >= 7:
@@ -210,6 +228,12 @@ class Brain:
         # ---- endgame: park the head where a cut leaves us the most --------------
         if self.endgame and w.t >= self.endgame and in_home and area >= 300:
             act = self._endgame_hold(tac)
+            if act is not None:
+                return act
+
+        # ---- cross necks so a cut there costs the light side, not the bulk ------
+        if self.neck and in_home and w.t - self.neck_t >= 3:
+            act = self._cross_neck()
             if act is not None:
                 return act
 
@@ -250,6 +274,31 @@ class Brain:
             return 0
         mass, region, _ = sh.blobs[sh.heavy]
         return region if mass >= 0.4 * sh.area else 0
+
+    def _cross_neck(self):
+        w = self.w
+        b = w.b
+        p = self.plan
+        if p is not None and (p.kind == 'neck' or (p.kind == 'loop' and self.pi > 0)):
+            return None
+        self.neck_t = w.t
+        area = popcount(w.mine)
+        if area < 300:
+            return None
+        cut = neck_cut(b, w.mine, b.bit[w.head], narrow=self.neck)
+        if cut is None:
+            return None
+        excess, depth, layers = cut
+        if excess < max(200, 0.25 * area):
+            return None
+        target = min(len(layers) - 1, depth + 4)
+        path = path_down_layers(b, layers, target, w.head)
+        if not path:
+            return None
+        self.plan = Plan(path, excess, len(path), 0, kind='neck')
+        self.pi = 0
+        self._count('neck')
+        return self._step()
 
     def _relocate(self, planner):
         """Walk into the heaviest blob when a single neck cut would cost us most of our land."""
@@ -328,6 +377,7 @@ class Brain:
                 best = (k, KEYS[d])
         if best[1] == 'I' and self.fails >= 2:
             return self.safe_move()
+        self._count('hold_' + ('alert' if w.t - self.alert < 12 else 'noplan') + ('_I' if best[1] == 'I' else ''))
         return best[1]
 
     # ------------------------------------------------------------------
@@ -374,10 +424,12 @@ class Brain:
         h = w.head
         nxt = p.cells[self.pi]
         d = self._dir(h, nxt)
+        self._count('step_' + p.kind)
         if d is None:
             self.plan = None
             return self.safe_move()
         if self.bullet_block and w.t <= self.bullet_block[1] and nxt == self.bullet_block[0]:
+            self._count('idle_bullet')
             return 'I'
         if bit[nxt] & w.brk:
             return 'X' + KEYS[d]
@@ -386,6 +438,7 @@ class Brain:
             if self.blocked_wait > 2 or bit[nxt] & w.wall:
                 self.plan = None
                 self.blocked_wait = 0
+            self._count('idle_blocked')
             return 'I'
         self.blocked_wait = 0
         cells = p.cells
@@ -410,7 +463,13 @@ class Brain:
     def _new_plan(self, planner):
         w = self.w
         if w.mine and w.t - self.alert < 12:
-            return None  # enemy just around: no fresh excursions, hold thick land
+            # Enemy just around: no fresh excursions beyond a few cells, hold thick land.
+            if not self.alert_leg:
+                return None
+            plan = planner.plan_loops(max_leg=self.alert_leg)
+            if plan is not None and plan.trail <= 3 * self.alert_leg and plan.rate >= 0.8:
+                return plan
+            return None
         risky = self._enemy_near(25, 60)
         area = popcount(w.mine)
         # The bigger we are, the more a cut of our open trail would cost: shrink loops.
@@ -425,6 +484,8 @@ class Brain:
         plan = planner.plan_loops(max_leg=max_leg)
         if plan is not None and plan.rate >= 0.8:
             return plan
+        if perf_counter() > planner.deadline + 0.008:
+            return plan             # out of time: the frontier walk can wait a tick
         far = self._frontier(planner)
         if far is not None and (plan is None or far.rate > plan.rate):
             return far

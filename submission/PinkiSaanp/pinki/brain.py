@@ -21,6 +21,8 @@ class Brain:
         self.variant = variant or {}
         self.rng = random.Random(self.variant['seed']) if 'seed' in self.variant else None
         self.w = World()
+        self.w.book = bool(self.variant.get('book', 1))
+        self.w.freshcut = bool(self.variant.get('freshcut', 1))
         self.plan = None
         self.pi = 0
         self.state = EXPAND
@@ -84,7 +86,7 @@ class Brain:
                 w.t, 1000 * (t1 - t0), 1000 * (t2 - t1), action, self.state, self.plan))
         action = self.sanitize(action)
         if self.tracepos:
-            self._log('P %d %d %d %s %d' % (w.t, w.x, w.y, action, w.lost_track))
+            self._log('P %d %d %d %s %d %d' % (w.t, w.x, w.y, action, w.lost_track, popcount(w.mine)))
         if self.trace and self.trace[0] <= w.t <= self.trace[1]:
             self._log('T t=%d pos=(%d,%d) act=%s area=%d c=[d%d b%d g%d w%d] lost=%d\n  %s' % (
                 w.t, w.x, w.y, action, popcount(w.mine), w.dash.c, w.bomb.c, w.gun.c, w.build.c, w.lost_track,

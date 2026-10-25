@@ -102,6 +102,11 @@ class World:
         self.my_bullets = []            # [path cells, fired_t]
         self.my_bombs = []              # [centre, fired_t]
         self.lost_track = 0
+        self.prev_vis = 0
+        self.fresh_loss = 0
+        self.book = True                # book steals made by our bullets/bombs out of view
+        self.freshcut = True            # drop detached own land only at cuts seen in view
+        self.booked = 0
         self.area_hist = []
 
     # ------------------------------------------------------------------
@@ -282,7 +287,7 @@ class World:
         bit = b.bit
         t = self.t
         x0, y0 = self.x - 5, self.y - 5
-        vis = mine_v = brk_v = obj_v = 0
+        vis = mine_v = brk_v = obj_v = head_v = 0
         en_v = {k: 0 for k in self.enemy}
         bombs = {}
         bullets = {}
@@ -324,6 +329,7 @@ class World:
                 else:
                     obj_v |= bi
                     if ch in LABELS:
+                        head_v |= bi
                         prev = self.heads.get(ch)
                         if prev is not None and prev[1] == t - 1 and prev[0] != i:
                             for d, nb in enumerate(b.nbr[prev[0]]):
@@ -347,9 +353,18 @@ class World:
         self._track_bullets(bullets)
         self.vis = vis
         self.seen_ever |= vis
-        self.mine = (self.mine & ~vis) | mine_v
+        # A bullet or bomb hides the paint under it but does not change it (our own bullet
+        # on the trail tile behind us must not cut our head off in belief): keep the old
+        # belief there.  A head does claim its tile.
+        known = vis & ~(obj_v & ~head_v)
+        # Own tiles we watched turn into something else (in view last frame and now): only
+        # these can be cuts we actually saw.  Tiles we had not looked at for a while may
+        # just correct a stale belief.
+        self.fresh_loss = self.mine & known & self.prev_vis & ~mine_v
+        self.prev_vis = vis
+        self.mine = (self.mine & ~known) | mine_v
         for k in self.enemy:
-            self.enemy[k] = (self.enemy[k] & ~vis) | en_v[k]
+            self.enemy[k] = (self.enemy[k] & ~known) | en_v[k]
         self.brk = (self.brk & ~vis) | brk_v
         self.objs = obj_v
 
@@ -430,12 +445,15 @@ class World:
         b = self.b
         t = self.t
         add = 0
+        cuts = []                       # our paint that just landed: may cut enemy land
         keep = []
         for path, t0 in self.my_bullets:
             k = t - t0
             n = min(len(path), max(0, 3 * (k - 1)))
             for c in path[:n]:
                 add |= b.bit[c]
+            if n == len(path) and 3 * (k - 2) < len(path) and self.book:
+                cuts.append(b.mask(path))
             if 3 * (k - 1) < len(path) + 3:
                 keep.append((path, t0))
         self.my_bullets = keep
@@ -445,10 +463,24 @@ class World:
                 disk = b.disk(c, 9) & ~self.wall & ~self.objs
                 if disk & b.dilate(self.mine | b.bit[self.head]):
                     add |= disk
+                    if self.book:
+                        cuts.append(disk)
+                        self._book_kill(c, disk)
                 self.brk &= ~disk
             else:
                 keepb.append((c, t0))
         self.my_bombs = keepb
+        # Book what those cuts steal out of view (the engine gives it to us at once):
+        # otherwise our belief misses big pieces of our land and later drops more of it
+        # as "disconnected".
+        for removed in cuts:
+            ring = b.dilate(removed)
+            for lab, E in self.enemy.items():
+                if E & ring:
+                    piece = self.cut_off(lab, E & ~removed, removed) & ~self.vis
+                    if piece:
+                        add |= piece
+                        self.booked += popcount(piece)
         add &= ~self.vis
         if add:
             self.mine |= add
@@ -461,6 +493,22 @@ class World:
             self.brk &= ~filled
             for k in self.enemy:
                 self.enemy[k] &= ~filled
+
+    def _book_kill(self, centre, disk):
+        """Our bomb went off on an enemy head that cannot have left the kill diamond since we
+        saw it: all its land is ours now."""
+        b = self.b
+        w = b.w
+        cx, cy = centre % w, centre // w
+        for lab, (cell, ts) in self.heads.items():
+            age = self.t - ts
+            if age <= 2 and abs(cell % w - cx) + abs(cell // w - cy) + age <= 2:
+                E = self.enemy.get(lab, 0) & ~disk & ~self.vis
+                if E:
+                    self.mine |= E
+                    self.booked += popcount(E)
+                    for k in self.enemy:
+                        self.enemy[k] &= ~E
 
     def cut_off(self, lab, E2, removed=0):
         """Credible part of enemy land E2 that is no longer attached to its owner.
@@ -497,10 +545,22 @@ class World:
         return out
 
     def _enforce_connectivity(self):
+        """Drop own land cut off from the head, but only pieces bordering a cut seen in view:
+        our belief misses steals made out of view, so a piece that merely looks detached
+        after a stale tile is corrected is usually still attached through land we did not
+        book."""
         b = self.b
         hb = b.bit[self.head]
         comp = b.flood(hb, self.mine | hb)
-        self.mine &= comp
+        rest = self.mine & ~comp
+        if not rest:
+            return
+        if self.t < 2 or not self.freshcut:
+            self.mine &= comp
+            return
+        seeds = b.dilate(self.fresh_loss) & rest
+        if seeds:
+            self.mine &= ~b.flood(seeds, rest)
 
     # ------------------------------------------------------------------
     def note_action(self, action):

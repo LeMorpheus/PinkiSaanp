@@ -41,6 +41,7 @@ class Brain:
         self.opt_linedef = v.get('linedef', 0)
         self.alert_leg = v.get('alert_leg', 0)
         self.opt_order = v.get('order', 0)
+        self.noabil = v.get('noabil', 0)
         self.neck = v.get('neck', 0)               # widest layer treated as a neck (0 = off)
         self.w.book_steals = bool(v.get('book', 0))
         self.w.head_age = v.get('head_age', 1)
@@ -132,6 +133,9 @@ class Brain:
         planner = Planner(w, deadline, extra_block=b.mask(self.avoid), rng=self.rng, opts=self.variant)
         tac = Tactics(w, planner, avoid=b.mask(self.avoid))
         discount = self.plan.capture if self.plan else 0
+
+        if self.noabil:
+            return self._plain(planner, tac)
 
         # ---- 1. dodge enemy bombs that would cut our head off ----------------
         act = tac.evade(self._preview())
@@ -260,6 +264,16 @@ class Brain:
         if self.plan is None:
             return self._hold(tac)
         return self._step()
+
+    def _plain(self, planner, tac):
+        """Opponent model for tests: loops and dashes only, no bombs, bullets or walls."""
+        if self.plan is None:
+            self.plan = self._new_plan(planner)
+            self.pi = 0
+        if self.plan is None:
+            return self._hold(tac)
+        act = self._step()
+        return act if act[0] in 'WASDIJX' else 'I'
 
     def _shape(self):
         w = self.w

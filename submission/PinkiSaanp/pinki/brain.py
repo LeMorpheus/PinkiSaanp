@@ -42,6 +42,7 @@ class Brain:
         self.frontier_skipped = False
         self.atk_min = v.get('atk_min', 6)         # smallest credible steal worth walking for
         self.atk_score = v.get('atk_score', 3.0)
+        self.atk_radius = v.get('atk_radius', 6)   # how far we walk to cross an enemy trail
         self.opt_guard = v.get('guard', 0)         # race-based tail guard (vs reckless bots)
         self.opt_fp = v.get('fp', 0)               # opponent fingerprints widen/narrow its margin
         self.opt_wkdodge = v.get('wkdodge', 0)     # keep >= 2 own neighbours near enemy heads
@@ -679,7 +680,7 @@ class Brain:
         if self.plan is not None and self.plan.kind == 'attack':
             return None
         passable = planner.passable | w.mine
-        dist = b.distance_field(bit[w.head], passable, limit=6)
+        dist = b.distance_field(bit[w.head], passable, limit=self.atk_radius)
         best = None
         for c in b.cells(planner.enemy_all & w.vis):
             dd = dist[c]

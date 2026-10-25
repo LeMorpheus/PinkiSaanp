@@ -115,6 +115,7 @@ Head-to-head standard error is ~400 tiles per 128 games: outcomes are near-binar
 | `top=100` exact loop evaluations (until deadline, 6 ms reserved for the frontier walk) | opening +23% area (t=300/450/600: 1355/1880/2390 vs 1000/1374/1946); vs V2 +601 +- 425; vs PlainLoop field 4093 vs 3488 avg |
 | Frontier walk as layered bitboard BFS with early stop; planning budget 28 ms; staged loading | opening t=600/800: 2533/3197 (unseeded); idle-machine worst move ~27 ms (one 60 ms OS spike), cold first moves < 19 ms |
 | **Final build vs PinkiV1 + wall_hug + random (128 games)** | **4854 vs 1620 avg, win 73% vs 20%, h2h 100-28, +3233 +- 400, 0 TLE** |
+| **Final build vs PinkiV2 + wall_hug + random (256 games)** | **3447 vs 2890 avg, win 51% vs 43%, h2h 140-116, +558 +- 295** |
 
 Tried and dropped (vs V2, +-~400 each): heavy-blob relocation -226, BFS-neck crossing w2 -178 / w5 -4435, perimeter term +282/-304, visible-shooter line dodge +68, endgame centre hold +82, small loops on alert +49, bomb steal-awareness +380/+461 alone but -115 +- 278 on top of top=100 (256 games), lane plugs -150, cut-before-bomb ordering -115, head_age 4 -29, steal booking -88 (slow), risk x4 -147, snipe +117, bomb-split dodge -169, attack thresholds 30 +362 / off -316 (attacks are worth it). Code for these is in git history (commit a095ac3).
 

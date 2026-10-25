@@ -43,6 +43,12 @@ class Brain:
         self.opt_order = v.get('order', 0)
         self.noabil = v.get('noabil', 0)
         self.opt_plug = v.get('plug', 0)
+        self.opt_bombdodge = v.get('bombdodge', 0)
+        self.opt_snipe = v.get('snipe', 0)
+        self.frontier_skipped = False
+        self.centre_bias = v.get('centre_bias', 0)
+        self.atk_min = v.get('atk_min', 6)         # smallest credible steal worth walking for
+        self.atk_score = v.get('atk_score', 3.0)
         self.neck = v.get('neck', 0)               # widest layer treated as a neck (0 = off)
         self.w.book_steals = bool(v.get('book', 0))
         self.w.head_age = v.get('head_age', 1)
@@ -148,6 +154,12 @@ class Brain:
             self.state = RETREAT
             self.stats['evade'] += 1
             return act
+        if self.opt_bombdodge and in_home:
+            act = tac.dodge_split(self._preview())
+            if act:
+                self.plan = None
+                self._count('splitdodge')
+                return act
         # ---- 1b. stop an enemy bullet that would slice our land off ----------
         act = tac.block_bullets()
         if act:
@@ -232,6 +244,12 @@ class Brain:
                 self.bullet_block = (b.nbr[h][g[1]], w.t + 2)
                 self.stats['bullets'] += 1
                 return 'G' + KEYS[g[1]]
+            if self.opt_snipe and planner.enemy_all & w.vis and perf_counter() < deadline:
+                act = self._snipe_step(planner, g[0] if g else 0)
+                if act is not None:
+                    self.plan = None
+                    self._count('snipe')
+                    return act
 
         # ---- wall off bullet lanes that could slice our land ---------------------
         if self.opt_plug and in_home and w.t % 3 == 0 and w.build.c >= 5 and w.build.ready(w.t) \
@@ -287,6 +305,32 @@ class Brain:
             return self._hold(tac)
         act = self._step()
         return act if act[0] in 'WASDIJX' else 'I'
+
+    def _snipe_step(self, planner, here):
+        """Step to a neighbour from which a bullet would cut a big credible piece off an enemy."""
+        w = self.w
+        b = w.b
+        bit = b.bit
+        stop = w.wall | w.brk | w.objs
+        best = None
+        for d0, n in enumerate(b.nbr[w.head]):
+            if n < 0 or bit[n] & (stop | planner.block):
+                continue
+            for d in range(4):
+                if d == (d0 + 2) & 3:
+                    continue
+                line = w.ray(n, d)
+                if len(line) < 2:
+                    continue
+                lm = b.mask(line)
+                if not lm & planner.enemy_all:
+                    continue
+                s = planner.steal_by(lm)
+                if best is None or s > best[0]:
+                    best = (s, d0)
+        if best is None or best[0] < max(30, 2 * here):
+            return None
+        return KEYS[best[1]]
 
     def _shape(self):
         w = self.w
@@ -508,11 +552,13 @@ class Brain:
         max_leg = 12 if risky else (big if w.t > 30 else 14)
         if w.t > 1880 and area > 400:
             max_leg = min(max_leg, 5)
-        plan = planner.plan_loops(max_leg=max_leg)
+        plan = planner.plan_loops(max_leg=max_leg, top=self.variant.get("top", 100))
         if plan is not None and plan.rate >= 0.8:
             return plan
-        if perf_counter() > planner.deadline + 0.008:
-            return plan             # out of time: the frontier walk can wait a tick
+        if perf_counter() > planner.deadline + 0.008 and not self.frontier_skipped:
+            self.frontier_skipped = True
+            return plan             # out of time: the frontier walk can wait one tick
+        self.frontier_skipped = False
         far = self._frontier(planner)
         if far is not None and (plan is None or far.rate > plan.rate):
             return far
@@ -541,6 +587,10 @@ class Brain:
             score = popcount(region) / (dd + 12.0)
             if bit[c] & heavy:
                 score *= self.heavy_bonus
+            if self.centre_bias and w.t < 800:
+                # Enemies start in the other three corners: land toward the middle is
+                # contested and goes first; our corner's interior can wait.
+                score *= 1.0 + self.centre_bias * (c % b.w + c // b.w) / (b.w + b.h)
             if best is None or score > best[0]:
                 best = (score, c)
         if best is None:
@@ -637,12 +687,12 @@ class Brain:
             if dd >= INF or dd == 0:
                 continue
             steal = planner.steal_by(bit[c])
-            if steal < 6:
+            if steal < self.atk_min:
                 continue
             score = steal / (dd + 1.0)
             if best is None or score > best[0]:
                 best = (score, c, steal)
-        if best is None or best[0] < 3.0:
+        if best is None or best[0] < self.atk_score:
             return None
         c = best[1]
         path = [c]

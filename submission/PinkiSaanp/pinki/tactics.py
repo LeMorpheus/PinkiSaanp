@@ -322,6 +322,49 @@ class Tactics:
         comp = b.flood(b.dilate(hb) & A, A)
         return popcount(comp)
 
+    def dodge_split(self, preferred):
+        """A visible enemy bomb will split our land: walk (<= 2 cells, through our land) to the big side."""
+        w = self.w
+        b = self.b
+        bit = b.bit
+        M = w.mine
+        bombs = self.enemy_bombs()
+        if not bombs or not M:
+            return None
+        blast = 0
+        for c, _ in bombs:
+            blast |= b.disk(c, 9) & ~w.wall
+        if not blast & M:
+            return None
+        area = popcount(M)
+        h = w.head
+        here = self.kept_after(h, M, blast)
+        if area - here < max(150, 0.15 * area):
+            return None
+        # Cells within two steps through our land (outside the blast), first step remembered.
+        best = (here, None)
+        seen = {h}
+        frontier = []
+        for d, n in enumerate(b.nbr[h]):
+            if n >= 0 and bit[n] & M and not bit[n] & (self.move_block | blast):
+                frontier.append((n, d))
+                seen.add(n)
+        for depth in range(2):
+            nxt = []
+            for c, d0 in frontier:
+                k = self.kept_after(c, M | bit[h], blast)
+                if k > best[0] + 50:
+                    best = (k, d0)
+                if depth == 0:
+                    for n in b.nbr[c]:
+                        if n >= 0 and n not in seen and bit[n] & M and not bit[n] & (self.move_block | blast):
+                            seen.add(n)
+                            nxt.append((n, d0))
+            frontier = nxt
+        if best[1] is None:
+            return None
+        return KEYS[best[1]]
+
     def evade(self, preferred):
         """If enemy bombs threaten to isolate us, pick the move keeping most area."""
         w = self.w

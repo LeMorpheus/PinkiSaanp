@@ -16,6 +16,8 @@ from .board import DX, DY, OPP, INF, popcount
 
 A_LIST = (2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 22, 27, 33, 40)
 B_LIST = (2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 22, 27, 33, 40, 48)
+A_FINE = (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 25, 28, 31, 35, 40)
+B_FINE = (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 25, 28, 31, 35, 40, 44, 48)
 W_STEAL = 0.8          # extra value of a cell taken from an enemy
 RISK_K = 1.0 / 40000.0
 
@@ -47,6 +49,11 @@ class Planner:
         self.perim_w = opts.get('perim_w', 0.0)
         self.risk_k = RISK_K * opts.get('risk_mult', 1.0)
         self.bomb_steal = opts.get('bombsteal', 0)
+        self.nodeadline = opts.get('nodeadline', 0)     # debug: deterministic planning
+        self.starts_k = opts.get('starts_k', 7)
+        self.starts_dist = opts.get('starts_dist', 10)
+        self.rate_k = opts.get('rate_k', 2.0)          # loop score = gain / (cost + rate_k)
+        self.fine = opts.get('fine', 0)
         self._perim_m = None
         self.w = world
         self.b = world.b
@@ -62,8 +69,8 @@ class Planner:
         self.passable = b.full & ~self.block
         self._dist_m = None
 
-    def out_of_time(self):
-        return perf_counter() > self.deadline
+    def out_of_time(self, reserve=0.0):
+        return not self.nodeadline and perf_counter() > self.deadline - reserve
 
     # ------------------------------------------------------------------
     def value_of(self, new):
@@ -209,9 +216,10 @@ class Planner:
         passable = self.passable
         P = self._prefix()
         cands = []
-        starts = self._starts()
-        a_list = [a for a in A_LIST if a <= max_leg]
-        b_list = [v for v in B_LIST if v <= max_leg + 8]
+        starts = self._starts(max_dist=self.starts_dist, k=self.starts_k)
+        al, bl = (A_FINE, B_FINE) if self.fine else (A_LIST, B_LIST)
+        a_list = [a for a in al if a <= max_leg]
+        b_list = [v for v in bl if v <= max_leg + 8]
         for s, prefix in starts:
             if prefix is None:
                 continue
@@ -253,7 +261,7 @@ class Planner:
                             fy = ey + DY[d2] * bb
                             val = self._rect(P, sx, sy, fx, fy)
                             cost = pre + 2 * a + bb + (0 if M else bb)
-                            score = val / (cost + 2.0)
+                            score = val / (cost + self.rate_k)
                             if self.rng is not None:
                                 score *= 1.0 + 0.2 * self.rng.random()
                             cands.append((score, s, prefix, d1, a, d2, bb))
@@ -262,7 +270,7 @@ class Planner:
         evaluated = 0
         seen = set()
         for cand in cands:
-            if evaluated >= top or self.out_of_time():
+            if evaluated >= top or self.out_of_time(0.006):    # leave time for the frontier walk
                 break
             _, s, prefix, d1, a, d2, bb = cand
             key = (s, d1, a, d2, bb)
@@ -374,7 +382,7 @@ class Planner:
         if self.perim_w and self.M:
             pen += self.perim_w * (self.perimeter(self.M | self.hb | region) - self.perim_m())
         plan.gain -= pen
-        plan.rate = plan.gain / (plan.cost + 2.0)
+        plan.rate = plan.gain / (plan.cost + self.rate_k)
         return plan
 
     def _dir(self, a, c):
@@ -430,7 +438,7 @@ class Planner:
         if self.bomb_steal and ea:
             # Disks over enemy necks can cut whole territories off their owner.
             over = sorted((c for c in cands[4:] if c[3] & ea), key=lambda c: -popcount(c[3] & ea))
-            pool = pool + over[:6]
+            pool = pool + over[:4]
         best = None
         for g, i, j, new in pool:
             if best is not None and self.out_of_time():
